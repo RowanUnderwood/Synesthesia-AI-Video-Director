@@ -10,6 +10,7 @@ LTX_BASE_URL = "http://127.0.0.1:8000/api"
 LTX_AUTH_TOKEN: str = ""  # Bearer token for LTX Desktop auth; empty = no auth (vanilla LTX)
 LM_STUDIO_URL = "http://127.0.0.1:1234/v1"
 VIDEO_BACKEND = "LTX Desktop"  # "LTX Desktop" | "Wan2GP"
+COMFYUI_URL = "http://127.0.0.1:8188"  # Base URL for ComfyUI (Z-Image backend only)
 ELECTRICITY_COST = 0.1805  # USD per kWh (default 18.05¢)
 SYSTEM_WATTAGE = 600.0     # Watts, full system draw during generation (default: RTX 5090 system)
 GPU_MONITOR_INDEX = 0      # pynvml device index to monitor for VRAM usage
@@ -470,6 +471,7 @@ GLOBALIZABLE_KEYS = frozenset({
     "firstframe_mode", "llm_image_prompt_mode", "first_frame_reuse_mode",
     "vocal_prompt_mode", "vocal_chain_mode", "last_resolution", "last_versions",
     "last_camera_motion", "last_director", "last_style",
+    "zimage_backend",
 })
 
 _CODE_DEFAULTS = {
@@ -504,6 +506,7 @@ _CODE_DEFAULTS = {
     "last_camera_motion": "none",
     "last_director": "None",
     "last_style": "None",
+    "zimage_backend": "LTX Desktop",
 }
 
 # ==========================================
@@ -533,7 +536,7 @@ def save_global_llm(model_id):
         pass
 
 def load_global_url_settings():
-    global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, VIDEO_BACKEND, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
+    global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, VIDEO_BACKEND, COMFYUI_URL, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
     try:
         if os.path.exists(GLOBAL_SETTINGS_FILE):
             with open(GLOBAL_SETTINGS_FILE, "r") as f:
@@ -542,6 +545,7 @@ def load_global_url_settings():
                 LTX_AUTH_TOKEN = data.get("ltx_auth_token", LTX_AUTH_TOKEN)
                 LM_STUDIO_URL = data.get("lm_studio_url", LM_STUDIO_URL)
                 VIDEO_BACKEND = data.get("video_backend", VIDEO_BACKEND)
+                COMFYUI_URL = data.get("comfyui_url", COMFYUI_URL)
                 ELECTRICITY_COST = float(data.get("electricity_cost", ELECTRICITY_COST))
                 SYSTEM_WATTAGE = float(data.get("system_wattage", SYSTEM_WATTAGE))
                 GPU_MONITOR_INDEX = int(data.get("gpu_monitor_index", GPU_MONITOR_INDEX))
@@ -550,11 +554,12 @@ def load_global_url_settings():
 
 def save_global_url_settings(settings: dict):
     """Accept a settings dict and persist all global settings to disk."""
-    global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, VIDEO_BACKEND, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
+    global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, VIDEO_BACKEND, COMFYUI_URL, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
     LTX_BASE_URL = str(settings.get("ltx_base_url", LTX_BASE_URL)).strip()
     LTX_AUTH_TOKEN = str(settings.get("ltx_auth_token", LTX_AUTH_TOKEN)).strip()
     LM_STUDIO_URL = str(settings.get("lm_studio_url", LM_STUDIO_URL)).strip()
     VIDEO_BACKEND = settings.get("video_backend", VIDEO_BACKEND)
+    COMFYUI_URL = str(settings.get("comfyui_url", COMFYUI_URL)).strip()
     ELECTRICITY_COST = float(settings.get("electricity_cost", ELECTRICITY_COST))
     SYSTEM_WATTAGE = float(settings.get("system_wattage", SYSTEM_WATTAGE))
     raw_gpu = settings.get("gpu_monitor_index", GPU_MONITOR_INDEX)
@@ -569,6 +574,7 @@ def save_global_url_settings(settings: dict):
             "ltx_auth_token": LTX_AUTH_TOKEN,
             "lm_studio_url": LM_STUDIO_URL,
             "video_backend": VIDEO_BACKEND,
+            "comfyui_url": COMFYUI_URL,
             "electricity_cost": ELECTRICITY_COST,
             "system_wattage": SYSTEM_WATTAGE,
             "gpu_monitor_index": GPU_MONITOR_INDEX,

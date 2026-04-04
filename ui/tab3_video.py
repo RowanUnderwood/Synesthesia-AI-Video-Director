@@ -12,7 +12,8 @@ from models import LLMBridge, sync_video_directory
 from utils import format_eta
 from video import (get_project_videos, delete_video_file, generate_video_for_shot,
                    get_video_count_for_shot, apply_character_bibles, resolve_style_data,
-                   convert_prompt_for_zimage)
+                   convert_prompt_for_zimage, generate_comfyui_zimage_first_frame,
+                   _will_use_chain_conditioning, _has_valid_cached_first_frame)
 
 
 def build(pm_state, current_proj_var, shared_shot_state):
@@ -30,6 +31,13 @@ def build(pm_state, current_proj_var, shared_shot_state):
                 choices=["LTX-Native", "Z-Image First Frame"],
                 value="LTX-Native",
                 label="First Frame Mode"
+            )
+            vid_zimage_backend = gr.Dropdown(
+                choices=["LTX Desktop", "ComfyUI", "ComfyUI-run-ahead"],
+                value="LTX Desktop",
+                label="Z-Image Backend",
+                visible=False,
+                info="LTX Desktop: use LTX's built-in Z-Image. ComfyUI: generate via ComfyUI sequentially. ComfyUI-run-ahead: generate next shot's frame on ComfyUI in parallel while LTX renders current shot (dual-GPU).",
             )
             vid_vocal_chain_checkbox = gr.Checkbox(
                 value=False,
@@ -223,12 +231,13 @@ def build(pm_state, current_proj_var, shared_shot_state):
         # When switching off Z-Image, hide all controls and clear status
         # When switching on, restore visibility but let shot-change handler refresh status
         return (gr.update(visible=is_zimage), gr.update(visible=is_zimage),
-                gr.update(visible=is_zimage), gr.update(visible=False) if not is_zimage else gr.update())
+                gr.update(visible=is_zimage), gr.update(visible=False) if not is_zimage else gr.update(),
+                gr.update(visible=is_zimage))
 
     vid_firstframe_mode.change(
         toggle_zimage_controls,
         inputs=[vid_firstframe_mode],
-        outputs=[llm_image_prompt_dropdown, first_frame_prompt_row, first_frame_reuse_dropdown, first_frame_img_status]
+        outputs=[llm_image_prompt_dropdown, first_frame_prompt_row, first_frame_reuse_dropdown, first_frame_img_status, vid_zimage_backend]
     )
 
     clear_first_frame_img_btn.click(
@@ -245,9 +254,9 @@ def build(pm_state, current_proj_var, shared_shot_state):
         return gr.update(value=new_shot), shot_vid, shot_vid or ""
 
     def get_prev_shot_t3(current_shot, pm, gallery_paths):
-        if pm.df.empty: return gr.update(), None, "", ""
+        if pm.df.empty: return gr.update(), None, ""
         choices = pm.df['Shot_ID'].dropna().unique().tolist()
-        if not choices: return gr.update(), None, "", ""
+        if not choices: return gr.update(), None, ""
         if current_shot not in choices:
             new_shot = choices[-1]
         else:
@@ -255,9 +264,9 @@ def build(pm_state, current_proj_var, shared_shot_state):
         return _nav_shot_t3(new_shot, gallery_paths)
 
     def get_next_shot_t3(current_shot, pm, gallery_paths):
-        if pm.df.empty: return gr.update(), None, "", ""
+        if pm.df.empty: return gr.update(), None, ""
         choices = pm.df['Shot_ID'].dropna().unique().tolist()
-        if not choices: return gr.update(), None, "", ""
+        if not choices: return gr.update(), None, ""
         if current_shot not in choices:
             new_shot = choices[0]
         else:
@@ -450,7 +459,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
 
     # --- Persist Tab 3 preferences to project settings ---
 
-    def auto_save_tab3_prefs(firstframe, llm_img, reuse, vocal_mode, gen_mode,
+    def auto_save_tab3_prefs(firstframe, llm_img, reuse, zimage_backend, vocal_mode, gen_mode,
                               versions, resolution, camera, director, style, vocal_chain, pm):
         if not pm or not pm.current_project:
             return
@@ -458,6 +467,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
             "firstframe_mode": firstframe,
             "llm_image_prompt_mode": llm_img,
             "first_frame_reuse_mode": reuse,
+            "zimage_backend": zimage_backend,
             "vocal_prompt_mode": vocal_mode,
             "last_gen_mode": gen_mode,
             "last_versions": versions,
@@ -470,12 +480,12 @@ def build(pm_state, current_proj_var, shared_shot_state):
 
     _tab3_pref_inputs = [
         vid_firstframe_mode, llm_image_prompt_dropdown, first_frame_reuse_dropdown,
-        vid_vocal_prompt_mode, vid_gen_mode_dropdown, vid_versions_dropdown,
+        vid_zimage_backend, vid_vocal_prompt_mode, vid_gen_mode_dropdown, vid_versions_dropdown,
         vid_resolution_dropdown, single_shot_camera_dropdown,
         vid_director_dropdown, vid_style_dropdown, vid_vocal_chain_checkbox, pm_state,
     ]
     for _t3_comp in [vid_firstframe_mode, llm_image_prompt_dropdown, first_frame_reuse_dropdown,
-                     vid_vocal_prompt_mode, vid_gen_mode_dropdown, vid_versions_dropdown,
+                     vid_zimage_backend, vid_vocal_prompt_mode, vid_gen_mode_dropdown, vid_versions_dropdown,
                      vid_resolution_dropdown, single_shot_camera_dropdown,
                      vid_director_dropdown, vid_style_dropdown, vid_vocal_chain_checkbox]:
         _t3_comp.change(auto_save_tab3_prefs, inputs=_tab3_pref_inputs)
@@ -510,6 +520,13 @@ def build(pm_state, current_proj_var, shared_shot_state):
             lines.append(f"🎬 NOW RENDERING: {shot_label}")
             if current_msg:
                 lines.append(f"  ⏳ {current_msg}")
+            # Show run-ahead status
+            if getattr(pm, '_runhead_running', False):
+                _rh_sid = getattr(pm, '_runhead_shot_id', '?')
+                lines.append(f"  🚀 Run-ahead: generating Z-Image for {_rh_sid}...")
+            elif getattr(pm, '_runhead_result', None):
+                _rh_sid = pm._runhead_result[0]
+                lines.append(f"  ✅ Run-ahead: Z-Image for {_rh_sid} ready")
         if pm.render_queue:
             lines.append(f"📋 QUEUE ({len(pm.render_queue)}):")
             for i, item in enumerate(pm.render_queue, 1):
@@ -531,7 +548,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
             pass
         return resolution
 
-    def add_to_render_queue(shot_id, resolution, vocal_mode, style, director, generation_mode, pm, delete_path=None, camera_motion="none", use_llm_image_prompt=False, caching_mode="Use cached prompt", vocal_chain_mode=False):
+    def add_to_render_queue(shot_id, resolution, vocal_mode, style, director, generation_mode, pm, delete_path=None, camera_motion="none", use_llm_image_prompt=False, caching_mode="Use cached prompt", vocal_chain_mode=False, zimage_backend="LTX Desktop"):
         if not shot_id:
             return "❌ No shot selected."
         effective_res = _effective_resolution(shot_id, resolution, pm.df)
@@ -540,7 +557,8 @@ def build(pm_state, current_proj_var, shared_shot_state):
                 'delete_path': delete_path, 'camera_motion': camera_motion,
                 'use_llm_image_prompt': use_llm_image_prompt,
                 'caching_mode': caching_mode,
-                'vocal_chain_mode': vocal_chain_mode}
+                'vocal_chain_mode': vocal_chain_mode,
+                'zimage_backend': zimage_backend}
         with pm.queue_lock:
             pm.render_queue.append(item)
         status = format_queue_status(pm)
@@ -582,6 +600,12 @@ def build(pm_state, current_proj_var, shared_shot_state):
         queue_elapsed = 0.0
         _first_shot_in_session = True
 
+        # Run-ahead state for ComfyUI-run-ahead mode
+        pm._runhead_running = False
+        pm._runhead_shot_id = None
+        pm._runhead_result = None
+        pm._runhead_thread = None
+
         try:
             while True:
                 if pm.queue_paused:
@@ -618,6 +642,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
                 render_start = time.time()
 
                 _jit_started_for_this_shot = False
+                _runhead_started_for_this_shot = False
                 pm._display_ffp = None  # reset side-channel before each shot
 
                 for path, msg in generate_video_for_shot(
@@ -629,6 +654,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
                     use_llm_image_prompt=current_item.get('use_llm_image_prompt', False),
                     caching_mode=current_item.get('caching_mode', 'Use cached prompt'),
                     vocal_chain_mode=current_item.get('vocal_chain_mode', False),
+                    zimage_backend=current_item.get('zimage_backend', 'LTX Desktop'),
                 ):
                     if path is None:
                         ltx_pct = 0
@@ -661,12 +687,15 @@ def build(pm_state, current_proj_var, shared_shot_state):
 
                         # JIT: while the current video is rendering, pre-convert the next shot's
                         # image prompt via LLM (LTX is busy; LM Studio is free).
+                        # Skip JIT if next shot uses ComfyUI-run-ahead — the run-ahead worker handles everything.
                         if not _jit_started_for_this_shot and not _jit_state[0]:
                             with pm.queue_lock:
                                 _next_items = list(pm.render_queue[:1])
                             if _next_items:
                                 _ni = _next_items[0]
-                                if (_ni.get('generation_mode') == 'Z-Image First Frame'
+                                _next_is_runhead = (_ni.get('zimage_backend') == 'ComfyUI-run-ahead')
+                                if (not _next_is_runhead
+                                        and _ni.get('generation_mode') == 'Z-Image First Frame'
                                         and _ni.get('use_llm_image_prompt')):
                                     _next_row = pm.df[pm.df['Shot_ID'] == _ni['shot_id']]
                                     _cached = ""
@@ -745,7 +774,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
                                                 if _ridx and "First_Frame_Prompt" in pm.df.columns:
                                                     with pm.queue_lock:
                                                         pm.df.at[_ridx[0], "First_Frame_Prompt"] = _converted
-                                                    pm.save_data()
+                                                        pm.save_data()
                                                 if _type == "Vocal" and _vm == "Use Singer/Band Description":
                                                     pm.save_project_settings({
                                                         "zimage_vocal_first_frame_prompt": _converted,
@@ -756,6 +785,134 @@ def build(pm_state, current_proj_var, shared_shot_state):
                                                 _jit_state[0] = False
 
                                         threading.Thread(target=_jit_worker, daemon=True).start()
+
+                        # RUN-AHEAD: while the current video renders on LTX, generate the next shot's
+                        # Z-image first frame on ComfyUI (separate GPU). Skipped for chain-conditioned
+                        # shots (they use the predecessor's look-ahead frame, not a Z-image) and for
+                        # shots that already have a valid cached first-frame image.
+                        if not _runhead_started_for_this_shot and not pm._runhead_running:
+                            with pm.queue_lock:
+                                _rh_next = list(pm.render_queue[:1])
+                            if _rh_next:
+                                _rh_ni = _rh_next[0]
+                                if (
+                                    _rh_ni.get('generation_mode') == 'Z-Image First Frame'
+                                    and _rh_ni.get('zimage_backend') == 'ComfyUI-run-ahead'
+                                    and not _has_valid_cached_first_frame(_rh_ni, pm)
+                                ):
+                                    pm._runhead_running = True
+                                    pm._runhead_shot_id = _rh_ni['shot_id']
+                                    # Do NOT clear pm._runhead_result here — it may hold a valid
+                                    # pre-generated frame for the current shot that video.py
+                                    # hasn't consumed yet. The worker overwrites it when done.
+                                    _rh_ni_copy = dict(_rh_ni)
+
+                                    def _runhead_worker(_rh_ni_copy=_rh_ni_copy):
+                                        try:
+                                            _s = pm.load_project_settings()
+                                            _sid = _rh_ni_copy['shot_id']
+                                            _nr = pm.df[pm.df['Shot_ID'] == _sid]
+                                            if _nr.empty:
+                                                return
+                                            _cmode = _rh_ni_copy.get('caching_mode', 'Use cached prompt')
+                                            if _cmode == 'Regenerate both on each render':
+                                                pass  # Always regenerate — proceed with generation
+                                            # Build assembled prompt (same logic as JIT worker)
+                                            _type = _nr.iloc[0].get("Type", "")
+                                            _vm = _rh_ni_copy.get('vocal_mode', '')
+                                            _style = _rh_ni_copy.get('style')
+                                            _director = _rh_ni_copy.get('director')
+                                            _style_data = resolve_style_data(_style, pm) if _style and _style != "None" else None
+
+                                            def _rh_assemble(_base_p):
+                                                _p = _base_p
+                                                if pm.character_bibles:
+                                                    _p = apply_character_bibles(_p, pm.character_bibles)
+                                                if _style_data:
+                                                    _p = _style_data["prompt"].replace("{prompt}", _p)
+                                                if _director and _director != "None":
+                                                    _eff = _director
+                                                    if _director == "Custom":
+                                                        _eff = _s.get("custom_director", "")
+                                                    if _eff:
+                                                        _p += f". This video was directed by {_eff}."
+                                                return _p
+
+                                            if _type == "Vocal" and _vm == "Use Singer/Band Description":
+                                                _src = _s.get("performance_desc", "")
+                                                _assembled_vocal = _rh_assemble(_src) if _src else ""
+                                                if not _assembled_vocal:
+                                                    print(f"⚠️ [Run-ahead] Skipping {_sid}: performance_desc is empty")
+                                                    return
+                                                _base = _assembled_vocal
+                                            else:
+                                                _vp = _nr.iloc[0].get("Video_Prompt", "")
+                                                _raw = "" if pd.isna(_vp) else str(_vp).strip()
+                                                _base = _rh_assemble(_raw) if _raw else ""
+                                            if not _base:
+                                                print(f"⚠️ [Run-ahead] Skipping {_sid}: assembled prompt is empty (type={_type}, vocal_mode={_vm})")
+                                                return
+
+                                            # LLM conversion if requested
+                                            if _rh_ni_copy.get('use_llm_image_prompt'):
+                                                if _cmode == 'Regenerate both on each render':
+                                                    # Always regenerate fresh — skip cache reads and writes
+                                                    print(f"🧠 [Run-ahead] Converting prompt (no cache) for {_sid}...")
+                                                    _zimage_prompt = convert_prompt_for_zimage(_base, pm, _s)
+                                                else:
+                                                    # Check CSV cache first
+                                                    _rh_cached_p = ""
+                                                    if "First_Frame_Prompt" in pm.df.columns:
+                                                        _rh_raw = _nr.iloc[0].get("First_Frame_Prompt", "")
+                                                        if _rh_raw and not pd.isna(_rh_raw) and str(_rh_raw).strip():
+                                                            _rh_cached_p = str(_rh_raw).strip()
+                                                    if _rh_cached_p:
+                                                        _zimage_prompt = _rh_cached_p
+                                                    elif _type == "Vocal" and _vm == "Use Singer/Band Description":
+                                                        if (_s.get("zimage_vocal_source_assembled") == _base
+                                                                and _s.get("zimage_vocal_first_frame_prompt")):
+                                                            _zimage_prompt = _s["zimage_vocal_first_frame_prompt"]
+                                                        else:
+                                                            print(f"🧠 [Run-ahead] Converting prompt for {_sid}...")
+                                                            _zimage_prompt = convert_prompt_for_zimage(_base, pm, _s)
+                                                            pm.save_project_settings({
+                                                                "zimage_vocal_first_frame_prompt": _zimage_prompt,
+                                                                "zimage_vocal_source_assembled": _base,
+                                                            })
+                                                    else:
+                                                        print(f"🧠 [Run-ahead] Converting prompt for {_sid}...")
+                                                        _zimage_prompt = convert_prompt_for_zimage(_base, pm, _s)
+                                                    # Cache converted prompt to CSV
+                                                    _ridx = pm.df.index[pm.df['Shot_ID'] == _sid].tolist()
+                                                    if _ridx and "First_Frame_Prompt" in pm.df.columns and not _rh_cached_p:
+                                                        with pm.queue_lock:
+                                                            pm.df.at[_ridx[0], "First_Frame_Prompt"] = _zimage_prompt
+                                                            pm.save_data()
+                                            else:
+                                                _zimage_prompt = _base
+
+                                            # Generate Z-image via ComfyUI (drain the generator synchronously)
+                                            print(f"🚀 [Run-ahead] Generating Z-Image for {_sid}...")
+                                            _frame_path, _frame_err = None, "Unknown"
+                                            for _rh_item in generate_comfyui_zimage_first_frame(_zimage_prompt, _sid, pm):
+                                                if isinstance(_rh_item, tuple):
+                                                    _frame_path, _frame_err = _rh_item
+                                                # progress strings discarded in background thread
+
+                                            if _frame_err:
+                                                print(f"❌ [Run-ahead] Z-Image failed for {_sid}: {_frame_err}")
+                                                pm._runhead_result = None
+                                            else:
+                                                pm._runhead_result = (_sid, _frame_path, _zimage_prompt)
+                                                print(f"✅ [Run-ahead] Z-Image ready for {_sid}: {_frame_path}")
+                                        finally:
+                                            pm._runhead_running = False
+
+                                    _rh_t = threading.Thread(target=_runhead_worker, daemon=True)
+                                    pm._runhead_thread = _rh_t
+                                    _runhead_started_for_this_shot = True
+                                    _rh_t.start()
+                                    print(f"🚀 [Run-ahead] Started Z-Image pre-generation for {_rh_ni['shot_id']}")
 
                 actual_render_secs = time.time() - render_start
                 queue_elapsed += actual_render_secs
@@ -800,12 +957,22 @@ def build(pm_state, current_proj_var, shared_shot_state):
             with pm.queue_lock:
                 pm.queue_processor_running = False
                 pm.stop_video_generation = False
+            # Clean up any stale run-ahead state
+            pm._runhead_running = False
+            pm._runhead_result = None
+            pm._runhead_thread = None
+            pm._runhead_shot_id = None
             gal = get_project_videos(pm, proj)
             yield gal, "💤 Queue is empty.", [item[0] for item in gal], 0, 0, "", "", "", "", gr.update(), gr.update(), gr.update()
 
-    def batch_enqueue_shots(mode, target_versions, resolution, vocal_mode, style, director, generation_mode, llm_image_prompt_mode, caching_mode, vocal_chain_mode, pm):
+    def batch_enqueue_shots(mode, target_versions, resolution, vocal_mode, style, director, generation_mode, llm_image_prompt_mode, caching_mode, vocal_chain_mode, zimage_backend, pm):
         if pm.current_project:
-            pm.load_project(pm.current_project)
+            csv_path = os.path.join(pm.base_dir, pm.current_project, "shot_list.csv")
+            if os.path.exists(csv_path):
+                pm.df = pd.read_csv(csv_path)
+                for col in config.REQUIRED_COLUMNS:
+                    if col not in pm.df.columns:
+                        pm.df[col] = ""
         df = pm.df
         if df.empty:
             return "No shots found.", gr.update(value="Start Batch Generation")
@@ -848,7 +1015,8 @@ def build(pm_state, current_proj_var, shared_shot_state):
                         'delete_path': None, 'camera_motion': 'none',
                         'use_llm_image_prompt': (llm_image_prompt_mode == "Convert with LLM"),
                         'caching_mode': caching_mode,
-                        'vocal_chain_mode': vocal_chain_mode}
+                        'vocal_chain_mode': vocal_chain_mode,
+                        'zimage_backend': zimage_backend}
                 with pm.queue_lock:
                     pm.render_queue.append(item)
                 items_added += 1
@@ -861,14 +1029,15 @@ def build(pm_state, current_proj_var, shared_shot_state):
         return msg + "\n" + format_queue_status(pm), gr.update(value=f"⏳ Queue: {items_added} items")
 
     single_shot_btn.click(
-        lambda shot_id, res, vocal, style, director, gen_mode, cam, llm_img, caching_mode, vocal_chain, pm:
+        lambda shot_id, res, vocal, style, director, gen_mode, cam, llm_img, caching_mode, vocal_chain, zimage_backend, pm:
             add_to_render_queue(shot_id, res, vocal, style, director, gen_mode, pm,
                                 camera_motion=cam, use_llm_image_prompt=(llm_img == "Convert with LLM"),
-                                caching_mode=caching_mode, vocal_chain_mode=vocal_chain),
+                                caching_mode=caching_mode, vocal_chain_mode=vocal_chain,
+                                zimage_backend=zimage_backend),
         inputs=[single_shot_dropdown, vid_resolution_dropdown, vid_vocal_prompt_mode,
                 vid_style_dropdown, vid_director_dropdown, vid_firstframe_mode,
                 single_shot_camera_dropdown, llm_image_prompt_dropdown, first_frame_reuse_dropdown,
-                vid_vocal_chain_checkbox, pm_state],
+                vid_vocal_chain_checkbox, vid_zimage_backend, pm_state],
         outputs=[vid_gen_status]
     ).then(
         process_render_queue_if_idle,
@@ -907,7 +1076,8 @@ def build(pm_state, current_proj_var, shared_shot_state):
         batch_enqueue_shots,
         inputs=[vid_gen_mode_dropdown, vid_versions_dropdown, vid_resolution_dropdown,
                 vid_vocal_prompt_mode, vid_style_dropdown, vid_director_dropdown, vid_firstframe_mode,
-                llm_image_prompt_dropdown, first_frame_reuse_dropdown, vid_vocal_chain_checkbox, pm_state],
+                llm_image_prompt_dropdown, first_frame_reuse_dropdown, vid_vocal_chain_checkbox,
+                vid_zimage_backend, pm_state],
         outputs=[vid_gen_status, vid_gen_start_btn]
     ).then(
         process_render_queue_if_idle,
@@ -953,7 +1123,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
 
     del_vid_btn.click(handle_vid_delete, inputs=[selected_vid_path, current_proj_var, pm_state, gallery_paths_state], outputs=[vid_gallery, vid_large_view, selected_vid_path, gallery_paths_state])
 
-    def handle_regen_vid_and_prompt(shot_id_txt, selected_path, resolution, vocal_mode, style, director, generation_mode, llm_image_prompt_mode, caching_mode, vocal_chain_mode, proj, pm):
+    def handle_regen_vid_and_prompt(shot_id_txt, selected_path, resolution, vocal_mode, style, director, generation_mode, llm_image_prompt_mode, caching_mode, vocal_chain_mode, camera_motion, proj, pm):
         use_llm_img = (llm_image_prompt_mode == "Convert with LLM")
         if not shot_id_txt:
             yield gr.update(), "❌ No Shot ID selected", gr.update(), 0, 0, "", "", "", "", gr.update(), gr.update(), gr.update()
@@ -1031,7 +1201,8 @@ def build(pm_state, current_proj_var, shared_shot_state):
                     pm.save_data()
 
             add_to_render_queue(shot_id_txt, resolution, vocal_mode, style, director, generation_mode, pm,
-                                delete_path=selected_path, use_llm_image_prompt=use_llm_img,
+                                delete_path=selected_path, camera_motion=camera_motion,
+                                use_llm_image_prompt=use_llm_img,
                                 caching_mode=caching_mode, vocal_chain_mode=vocal_chain_mode)
             gal = get_project_videos(pm, proj)
             yield gal, f"✅ Prompt saved. Added to queue.\n" + format_queue_status(pm), [item[0] for item in gal], 0, 0, "", "", "", "", gr.update(), gr.update(), new_ffp
@@ -1039,13 +1210,15 @@ def build(pm_state, current_proj_var, shared_shot_state):
             pm.llm_busy = False
 
     regen_vid_same_prompt_btn.click(
-        lambda shot_id, sel_path, res, vocal, style, director, gen_mode, llm_img, caching_mode, vocal_chain, pm:
+        lambda shot_id, sel_path, res, vocal, style, director, gen_mode, llm_img, caching_mode, vocal_chain, cam, pm:
             add_to_render_queue(shot_id, res, vocal, style, director, gen_mode, pm,
-                                delete_path=sel_path, use_llm_image_prompt=(llm_img == "Convert with LLM"),
+                                delete_path=sel_path, camera_motion=cam,
+                                use_llm_image_prompt=(llm_img == "Convert with LLM"),
                                 caching_mode=caching_mode, vocal_chain_mode=vocal_chain),
         inputs=[single_shot_dropdown, selected_vid_path, vid_resolution_dropdown,
                 vid_vocal_prompt_mode, vid_style_dropdown, vid_director_dropdown, vid_firstframe_mode,
-                llm_image_prompt_dropdown, first_frame_reuse_dropdown, vid_vocal_chain_checkbox, pm_state],
+                llm_image_prompt_dropdown, first_frame_reuse_dropdown, vid_vocal_chain_checkbox,
+                single_shot_camera_dropdown, pm_state],
         outputs=[vid_gen_status]
     ).then(
         process_render_queue_if_idle,
@@ -1063,7 +1236,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
         inputs=[single_shot_dropdown, selected_vid_path, vid_resolution_dropdown,
                 vid_vocal_prompt_mode, vid_style_dropdown, vid_director_dropdown, vid_firstframe_mode,
                 llm_image_prompt_dropdown, first_frame_reuse_dropdown, vid_vocal_chain_checkbox,
-                current_proj_var, pm_state],
+                single_shot_camera_dropdown, current_proj_var, pm_state],
         outputs=[vid_gallery, vid_gen_status, gallery_paths_state,
                  current_render_progress, queue_progress_bar,
                  current_render_eta, queue_eta_txt,
@@ -1159,6 +1332,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
         # Preference controls restored on project load
         "vid_firstframe_mode": vid_firstframe_mode,
         "vid_vocal_chain_checkbox": vid_vocal_chain_checkbox,
+        "vid_zimage_backend": vid_zimage_backend,
         "llm_image_prompt_dropdown": llm_image_prompt_dropdown,
         "first_frame_reuse_dropdown": first_frame_reuse_dropdown,
         "first_frame_prompt_row": first_frame_prompt_row,

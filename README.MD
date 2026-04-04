@@ -58,6 +58,16 @@ For Windows users who prefer not to use the command line, a single launcher batc
 
 > **Note:** Make sure Python, FFmpeg, and Git are installed and on your PATH before running the batch file (see [Prerequisites](#prerequisites)).
 
+> **LTX Desktop Auth Fix (latest version):** Recent versions of LTX Desktop enable token-based authentication by default, which blocks Synesthesia's API calls with a 401 Unauthorized error. To disable it, open `ltx2_server.py` inside your LTX Desktop installation (`LTX Desktop\resources\backend\ltx2_server.py`) and change:
+> ```python
+> auth_token = os.environ.get("LTX_AUTH_TOKEN", "")
+> ```
+> to:
+> ```python
+> auth_token = ""
+> ```
+> Save the file and restart LTX Desktop.
+
 ## Manual Installation (All Platforms)
 
 1. **Clone the repository**

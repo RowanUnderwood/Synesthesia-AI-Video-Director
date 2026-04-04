@@ -37,6 +37,12 @@ def build(pm_state, llm_dropdown):
                 value=config.LM_STUDIO_URL,
                 placeholder="http://127.0.0.1:1234/v1",
             )
+            comfyui_url_in = gr.Textbox(
+                label="ComfyUI API URL",
+                value=config.COMFYUI_URL,
+                placeholder="http://127.0.0.1:8188",
+                info="Base URL for ComfyUI. Used when Z-Image Backend is set to ComfyUI in Tab 3.",
+            )
             electricity_cost_in = gr.Number(
                 label="Electricity Cost ($/kWh)",
                 value=config.ELECTRICITY_COST,
@@ -209,11 +215,12 @@ Pinokio sandboxes Wan2GP in its own Python environment — you must use Pinokio'
         outputs=[video_backend_drp, video_api_url_in, wan2gp_accordion, backend_switch_status],
     )
 
-    def handle_save_settings(video_url, ltx_auth_token, lm_url, backend, electricity_cost, system_wattage, gpu_monitor):
+    def handle_save_settings(video_url, ltx_auth_token, lm_url, comfyui_url, backend, electricity_cost, system_wattage, gpu_monitor):
         settings = {
             "ltx_base_url": video_url,
             "ltx_auth_token": ltx_auth_token,
             "lm_studio_url": lm_url,
+            "comfyui_url": comfyui_url,
             "video_backend": backend,
             "electricity_cost": electricity_cost,
             "system_wattage": system_wattage,
@@ -224,7 +231,7 @@ Pinokio sandboxes Wan2GP in its own Python environment — you must use Pinokio'
 
     save_settings_btn.click(
         handle_save_settings,
-        inputs=[video_api_url_in, ltx_auth_token_in, lm_url_in, video_backend_drp, electricity_cost_in, system_wattage_in, gpu_monitor_drp],
+        inputs=[video_api_url_in, ltx_auth_token_in, lm_url_in, comfyui_url_in, video_backend_drp, electricity_cost_in, system_wattage_in, gpu_monitor_drp],
         outputs=[settings_status, llm_dropdown],
     )
 

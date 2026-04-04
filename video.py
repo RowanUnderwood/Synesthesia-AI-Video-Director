@@ -1,7 +1,9 @@
 import os
 import re
 import glob
+import json
 import time
+import random
 import shutil
 import subprocess
 import threading
@@ -25,6 +27,42 @@ def _ltx_headers() -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def _mask_token(value):
+    """Mask a Bearer token for safe logging, showing first/last 4 chars."""
+    prefix = "Bearer "
+    if value.startswith(prefix):
+        token = value[len(prefix):]
+        if len(token) > 8:
+            return f"Bearer {token[:4]}...{token[-4:]}"
+    return value
+
+
+def _log_ltx_request(method, url, headers, payload=None):
+    """Print full LTX API request details to terminal for debugging."""
+    masked = {k: (_mask_token(v) if "authorization" in k.lower() else v) for k, v in headers.items()}
+    print(f"\n{'='*60}")
+    print(f"LTX API REQUEST")
+    print(f"  Method:  {method.upper()}")
+    print(f"  URL:     {url}")
+    print(f"  Headers: {masked if masked else '(none)'}")
+    if payload:
+        print(f"  Payload:\n{json.dumps(payload, indent=4)}")
+    print(f"{'='*60}")
+
+
+def _log_ltx_error(method, url, error, response=None):
+    """Print full LTX API error details to terminal."""
+    print(f"\n{'='*60}")
+    print(f"LTX API ERROR")
+    print(f"  Method: {method.upper()}")
+    print(f"  URL:    {url}")
+    print(f"  Error:  {error}")
+    if response is not None:
+        print(f"  Status: {response.status_code}")
+        print(f"  Body:   {response.text}")
+    print(f"{'='*60}")
+
+
 def convert_prompt_for_zimage(base_prompt, pm, settings=None):
     """Convert a video prompt into a still-image first-frame prompt via LLM.
 
@@ -38,7 +76,7 @@ def convert_prompt_for_zimage(base_prompt, pm, settings=None):
     llm_model = settings.get("llm_model", "qwen3-vl-8b-instruct-abliterated-v2.0")
     llm = LLMBridge()
     user_msg = template.replace("{prompt}", base_prompt)
-    return llm.query("", user_msg, llm_model)
+    return llm.query(config.ZIMAGE_PROMPT_SYSTEM_PROMPT, user_msg, llm_model)
 
 
 def resolve_style_data(style_name, pm):
@@ -188,7 +226,10 @@ def _discover_zimage_url():
     host = base[:-4] if base.endswith('/api') else base  # e.g. http://127.0.0.1:8000
 
     try:
-        resp = requests.get(f"{host}/openapi.json", timeout=5, headers=_ltx_headers())
+        _url = f"{host}/openapi.json"
+        _hdrs = _ltx_headers()
+        _log_ltx_request("GET", _url, _hdrs)
+        resp = requests.get(_url, timeout=5, headers=_hdrs)
         resp.raise_for_status()
         schema = resp.json()
         for path, methods in schema.get("paths", {}).items():
@@ -199,6 +240,7 @@ def _discover_zimage_url():
                     print(f"🔍 Z-Image endpoint discovered: {_zimage_url_cache}")
                     return _zimage_url_cache
     except Exception as e:
+        _log_ltx_error("GET", f"{host}/openapi.json", e, getattr(e, "response", None))
         print(f"⚠️ Z-Image endpoint discovery failed: {e}")
 
     return None
@@ -222,10 +264,13 @@ def generate_zimage_first_frame(prompt, shot_id, pm):
             result_container['error'] = "Could not discover Z-Image endpoint from LTX Desktop OpenAPI schema."
             return
         try:
-            resp = requests.post(url, json=payload, headers=_ltx_headers())
+            _hdrs = _ltx_headers()
+            _log_ltx_request("POST", url, _hdrs, payload)
+            resp = requests.post(url, json=payload, headers=_hdrs)
             resp.raise_for_status()
             result_container['response'] = resp.json()
         except requests.exceptions.RequestException as e:
+            _log_ltx_error("POST", url, e, getattr(e, "response", None))
             err_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
                 err_msg += f" - {e.response.text}"
@@ -261,6 +306,108 @@ def generate_zimage_first_frame(prompt, shot_id, pm):
     local_path = os.path.join(frames_dir, save_name)
     shutil.copy(image_paths[0], local_path)
     print(f"🖼️ Z-Image first frame saved: {local_path}")
+    yield (local_path, None)
+
+
+def generate_comfyui_zimage_first_frame(prompt, shot_id, pm):
+    """Generate a Z-Image first frame via ComfyUI using ZImage_Poster_API.json.
+    Same generator interface as generate_zimage_first_frame: yields progress strings,
+    final yield is (local_path, None) on success or (None, error_msg) on failure."""
+
+    # Load workflow template
+    workflow_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "comfyapi", "ZImage_Poster_API.json")
+    try:
+        with open(workflow_path, "r") as f:
+            workflow = json.load(f)
+    except Exception as e:
+        yield (None, f"Could not load ComfyUI workflow: {e}")
+        return
+
+    if isinstance(workflow, list) or "nodes" in workflow:
+        yield (None, "ZImage_Poster_API.json is in 'Saved' format — re-export from ComfyUI as API format.")
+        return
+
+    # Substitute parameters
+    workflow["6"]["inputs"]["text"] = str(prompt)
+    workflow["57"]["inputs"]["seed"] = random.randint(1, 10 ** 15)
+    workflow["61"]["inputs"]["width"] = config.Z_IMAGE_WIDTH
+    workflow["61"]["inputs"]["height"] = config.Z_IMAGE_HEIGHT
+    workflow["73"]["inputs"]["filename_prefix"] = f"synesthesia_{shot_id}"
+
+    # Submit to ComfyUI
+    submit_url = f"{config.COMFYUI_URL.rstrip('/')}/prompt"
+    submit_payload = {"prompt": workflow}
+    _log_ltx_request("POST", submit_url, {}, submit_payload)
+    try:
+        resp = requests.post(submit_url, json=submit_payload, timeout=15)
+        resp.raise_for_status()
+        prompt_id = resp.json().get("prompt_id")
+        if not prompt_id:
+            yield (None, f"ComfyUI did not return a prompt_id. Response: {resp.text}")
+            return
+    except requests.exceptions.RequestException as e:
+        _log_ltx_error("POST", submit_url, e, getattr(e, "response", None))
+        yield (None, f"ComfyUI submission failed: {e}")
+        return
+
+    # Poll /history/{prompt_id} until complete
+    history_url = f"{config.COMFYUI_URL.rstrip('/')}/history/{prompt_id}"
+    max_polls = 300  # 5-minute timeout at 1s intervals
+    for poll_count in range(max_polls):
+        time.sleep(1)
+        try:
+            hist_resp = requests.get(history_url, timeout=5)
+            if hist_resp.status_code == 200:
+                hist = hist_resp.json()
+                if prompt_id in hist:
+                    # Check for error status
+                    status = hist[prompt_id].get("status", {})
+                    if status.get("status_str") == "error" or status.get("completed") is False:
+                        messages = status.get("messages", [])
+                        yield (None, f"ComfyUI generation error: {messages}")
+                        return
+                    outputs = hist[prompt_id].get("outputs", {})
+                    if outputs:
+                        break
+            yield f"Z-Image (ComfyUI): generating... ({poll_count + 1}s)"
+        except requests.exceptions.RequestException:
+            yield f"Z-Image (ComfyUI): waiting... ({poll_count + 1}s)"
+    else:
+        yield (None, "ComfyUI Z-Image generation timed out after 5 minutes.")
+        return
+
+    # Extract image info from history output (node "73" is SaveImage)
+    try:
+        img_info = hist[prompt_id]["outputs"]["73"]["images"][0]
+    except (KeyError, IndexError) as e:
+        yield (None, f"Could not find output image in ComfyUI history: {e}\nOutputs: {outputs}")
+        return
+
+    # Download image via /view endpoint
+    view_url = f"{config.COMFYUI_URL.rstrip('/')}/view"
+    params = {
+        "filename": img_info["filename"],
+        "subfolder": img_info.get("subfolder", ""),
+        "type": img_info.get("type", "output"),
+    }
+    try:
+        img_resp = requests.get(view_url, params=params, timeout=30)
+        img_resp.raise_for_status()
+        image_bytes = img_resp.content
+    except requests.exceptions.RequestException as e:
+        _log_ltx_error("GET", view_url, e, getattr(e, "response", None))
+        yield (None, f"Failed to download ComfyUI image: {e}")
+        return
+
+    # Save to first_frames/
+    frames_dir = pm.get_path("first_frames")
+    os.makedirs(frames_dir, exist_ok=True)
+    save_name = f"{shot_id}_frame_v{int(time.time())}.png"
+    local_path = os.path.join(frames_dir, save_name)
+    with open(local_path, "wb") as f:
+        f.write(image_bytes)
+    print(f"🖼️ Z-Image (ComfyUI) first frame saved: {local_path}")
     yield (local_path, None)
 
 
@@ -356,7 +503,48 @@ def _get_chain_extension_resolution(resolution: str, original_dur: int):
     return resolution, False
 
 
-def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, director=None, generation_mode="LTX-Native", camera_motion="none", use_llm_image_prompt=False, caching_mode="Use cached prompt", vocal_chain_mode=False):
+def _will_use_chain_conditioning(shot_id: str, vocal_chain_mode: bool, pm) -> bool:
+    """Return True if this shot will receive chain imagePath conditioning from its predecessor,
+    meaning it will NOT need a Z-image first frame. Happens when vocal_chain_mode is on and
+    both this shot and its direct predecessor are Vocal type."""
+    if not vocal_chain_mode:
+        return False
+    try:
+        row = pm.df[pm.df['Shot_ID'] == shot_id]
+        if row.empty or str(row.iloc[0].get('Type', '')).strip() != 'Vocal':
+            return False
+        ids = pm.df['Shot_ID'].astype(str).str.upper().tolist()
+        pos = ids.index(str(shot_id).upper())
+        if pos == 0:
+            return False
+        return str(pm.df.iloc[pos - 1].get('Type', '')).strip() == 'Vocal'
+    except Exception:
+        return False
+
+
+def _has_valid_cached_first_frame(item: dict, pm) -> bool:
+    """Return True if this queue item's shot has a valid cached first-frame image that will be
+    reused at render time (caching_mode == 'Use cached image' AND file exists), making
+    run-ahead Z-image generation redundant."""
+    if item.get('caching_mode') != 'Use cached image':
+        return False
+    try:
+        import pandas as pd
+        if 'First_Frame_Image_Path' not in pm.df.columns:
+            return False
+        row = pm.df[pm.df['Shot_ID'] == item['shot_id']]
+        if row.empty:
+            return False
+        cached_rel = row.iloc[0].get('First_Frame_Image_Path', '')
+        if not cached_rel or pd.isna(cached_rel) or not str(cached_rel).strip():
+            return False
+        abs_path = os.path.join(pm.base_dir, pm.current_project, str(cached_rel).strip())
+        return os.path.isfile(abs_path)
+    except Exception:
+        return False
+
+
+def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, director=None, generation_mode="LTX-Native", camera_motion="none", use_llm_image_prompt=False, caching_mode="Use cached prompt", vocal_chain_mode=False, zimage_backend="LTX Desktop"):
     reuse_first_frame = (caching_mode == "Use cached image")
     skip_prompt_cache = (caching_mode == "Regenerate both on each render")
     row_idx = pm.df.index[pm.df['Shot_ID'].astype(str).str.upper() == str(shot_id).upper()].tolist()
@@ -417,13 +605,13 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
     payload = {
         "prompt": vid_prompt,
         "negativePrompt": negative_prompt,
-        "model": "pro",
+        "model": "fast",
         "resolution": resolution,
         "aspectRatio": "16:9",
-        "duration": str(row['Duration']),
-        "fps": "24",
+        "duration": int(float(row['Duration'])),
+        "fps": 24,
         "cameraMotion": camera_motion,
-        "audio": "false"
+        "audio": False
     }
 
     # --- Vocal Chain: extend duration by 1s to produce a look-ahead chain frame ---
@@ -436,7 +624,7 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
         if _vocal_chain_successor_is_vocal(shot_id, pm):
             _chain_res, _can_extend = _get_chain_extension_resolution(resolution, _original_dur)
             if _can_extend:
-                payload["duration"] = str(_original_dur + 1)
+                payload["duration"] = _original_dur + 1
                 _extend_for_chain = True
                 if _chain_res != resolution:
                     payload["resolution"] = _chain_res
@@ -538,8 +726,9 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
                     zimage_prompt = convert_prompt_for_zimage(vid_prompt, pm, settings_z)
                 # Cache the converted prompt to CSV for reuse (skipped when caching mode is "Regenerate both")
                 if not skip_prompt_cache and "First_Frame_Prompt" in pm.df.columns:
-                    pm.df.at[row_idx[0], "First_Frame_Prompt"] = zimage_prompt
-                    pm.save_data()
+                    with pm.queue_lock:
+                        pm.df.at[row_idx[0], "First_Frame_Prompt"] = zimage_prompt
+                        pm.save_data()
 
         # Signal the queue processor to update the First Frame Prompt textbox in the UI
         pm._display_ffp = zimage_prompt
@@ -565,11 +754,61 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
             print(f"🖼️ === GENERATING Z-IMAGE FIRST FRAME ===")
             print(f"🖼️ Z-Image prompt:\n{zimage_prompt}\n=================================\n")
             frame_path, frame_err = None, "Unknown"
-            for item in generate_zimage_first_frame(zimage_prompt, shot_id, pm):
-                if isinstance(item, tuple):
-                    frame_path, frame_err = item
-                else:
-                    yield None, item
+
+            if zimage_backend == "ComfyUI-run-ahead":
+                # Check if background run-ahead thread already produced this shot's frame
+                _rh_result = getattr(pm, '_runhead_result', None)
+                _rh_thread = getattr(pm, '_runhead_thread', None)
+                _rh_shot   = getattr(pm, '_runhead_shot_id', None)
+
+                if _rh_result and _rh_result[0] == shot_id:
+                    # Run-ahead already completed before video generation needed it
+                    frame_path = _rh_result[1]
+                    frame_err = None
+                    pm._runhead_result = None
+                    yield None, "🚀 Using pre-generated Z-Image first frame (run-ahead)..."
+                elif _rh_thread and _rh_shot == shot_id and _rh_thread.is_alive():
+                    # Run-ahead in progress — poll-wait while yielding so UI stays responsive
+                    _rh_wait_secs = 0
+                    yield None, "⏳ Waiting for ComfyUI Z-Image run-ahead to complete..."
+                    while _rh_thread.is_alive():
+                        time.sleep(1)
+                        _rh_wait_secs += 1
+                        yield None, f"⏳ Waiting for Z-Image run-ahead... ({_rh_wait_secs}s)"
+                    _rh_thread.join()
+                    _rh_result = getattr(pm, '_runhead_result', None)
+                    if _rh_result and _rh_result[0] == shot_id:
+                        frame_path = _rh_result[1]
+                        frame_err = None
+                        pm._runhead_result = None
+                        yield None, "🚀 Using pre-generated Z-Image first frame (run-ahead)..."
+                    else:
+                        yield None, "⚠️ Z-Image run-ahead failed — generating inline..."
+
+                if frame_path is None:
+                    # No run-ahead result available (first shot, single re-render, or run-ahead failed)
+                    # Fall back to inline ComfyUI generation
+                    _rh_diag_result = getattr(pm, '_runhead_result', None)
+                    _rh_diag_running = getattr(pm, '_runhead_running', False)
+                    _rh_diag_sid = getattr(pm, '_runhead_shot_id', None)
+                    print(f"⚠️ [Run-ahead] Inline fallback for {shot_id}: "
+                          f"result={_rh_diag_result}, running={_rh_diag_running}, "
+                          f"runhead_shot={_rh_diag_sid}")
+                    for _rh_item in generate_comfyui_zimage_first_frame(zimage_prompt, shot_id, pm):
+                        if isinstance(_rh_item, tuple):
+                            frame_path, frame_err = _rh_item
+                        else:
+                            yield None, _rh_item
+            else:
+                # Standard routing: LTX Desktop or ComfyUI (non-run-ahead)
+                _zimage_gen = (generate_comfyui_zimage_first_frame if zimage_backend == "ComfyUI"
+                               else generate_zimage_first_frame)
+                for item in _zimage_gen(zimage_prompt, shot_id, pm):
+                    if isinstance(item, tuple):
+                        frame_path, frame_err = item
+                    else:
+                        yield None, item
+
             if frame_err:
                 yield None, f"Error: Z-Image failed: {frame_err}"
                 return
@@ -578,10 +817,11 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
             if reuse_first_frame and "First_Frame_Image_Path" in pm.df.columns:
                 _project_root = os.path.join(pm.base_dir, pm.current_project)
                 _rel_path = os.path.relpath(frame_path, _project_root)
-                pm.df.at[row_idx[0], "First_Frame_Image_Path"] = _rel_path
-                if "First_Frame_Image_Source" in pm.df.columns:
-                    pm.df.at[row_idx[0], "First_Frame_Image_Source"] = zimage_prompt
-                pm.save_data()
+                with pm.queue_lock:
+                    pm.df.at[row_idx[0], "First_Frame_Image_Path"] = _rel_path
+                    if "First_Frame_Image_Source" in pm.df.columns:
+                        pm.df.at[row_idx[0], "First_Frame_Image_Source"] = zimage_prompt
+                    pm.save_data()
 
     if row['Type'] == "Vocal":
         vocals_path = pm.get_asset_path_if_exists("vocals.mp3")
@@ -604,15 +844,21 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
                 silence_pad = AudioSegment.silent(duration=deficit)
                 chunk = chunk + silence_pad
 
-            # Pad audio to match extended duration so LTX accepts the request
+            # Pad audio to match extended duration so LTX accepts the request.
+            # Use the next real second of vocals rather than silence so the
+            # raw generated clip doesn't appear to end 1 second early.
             if _extend_for_chain:
-                chunk = chunk + AudioSegment.silent(duration=1000)
+                extension_chunk = audio[end_ms : end_ms + 1000]
+                if len(extension_chunk) < 1000:
+                    extension_chunk = extension_chunk + AudioSegment.silent(duration=1000 - len(extension_chunk))
+                chunk = chunk + extension_chunk
 
             chunk_path = os.path.join(pm.get_path("audio_chunks"), f"{shot_id}_audio.mp3")
             chunk.export(chunk_path, format="mp3")
 
-            payload["audio"] = "true"
+            payload["audio"] = True
             payload["audioPath"] = os.path.abspath(chunk_path)
+            payload["model"] = "pro"  # audioPath requires model='pro' in new LTX versions
 
         except Exception as e:
             print(f"❌ AUDIO ERROR for {shot_id}: {e}")
@@ -623,10 +869,14 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
 
     def worker():
         try:
-            resp = requests.post(f"{config.LTX_BASE_URL}/generate", json=payload, headers=_ltx_headers())
+            _url = f"{config.LTX_BASE_URL}/generate"
+            _hdrs = _ltx_headers()
+            _log_ltx_request("POST", _url, _hdrs, payload)
+            resp = requests.post(_url, json=payload, headers=_hdrs)
             resp.raise_for_status()
             result_container['response'] = resp.json()
         except requests.exceptions.RequestException as e:
+            _log_ltx_error("POST", f"{config.LTX_BASE_URL}/generate", e, getattr(e, "response", None))
             err_msg = str(e)
             if e.response is not None:
                 err_msg += f" - {e.response.text}"
@@ -650,8 +900,9 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
 
     if 'error' in result_container:
         print(f"❌ GENERATION FAILED: {result_container['error']}")
-        pm.df.at[row_idx[0], 'Status'] = 'Error'
-        pm.save_data()
+        with pm.queue_lock:
+            pm.df.at[row_idx[0], 'Status'] = 'Error'
+            pm.save_data()
         yield None, f"Error: {result_container['error']}"
         return
 
@@ -665,10 +916,11 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
         local_path = os.path.join(pm.get_path("videos"), save_name)
         shutil.copy(video_path, local_path)
 
-        pm.df.at[row_idx[0], 'Video_Path'] = local_path
-        pm.df.at[row_idx[0], 'Status'] = 'Done'
-        pm.df.at[row_idx[0], 'Render_Resolution'] = resolution
-        pm.save_data()
+        with pm.queue_lock:
+            pm.df.at[row_idx[0], 'Video_Path'] = local_path
+            pm.df.at[row_idx[0], 'Status'] = 'Done'
+            pm.df.at[row_idx[0], 'Render_Resolution'] = payload["resolution"]
+            pm.save_data()
 
         if _extend_for_chain:
             # Extract the frame 1 frame past the shot's intended end.

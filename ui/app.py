@@ -194,6 +194,8 @@ def build_app():
                 gr.update(visible=(settings.get("firstframe_mode", "LTX-Native") == "Z-Image First Frame"),
                           value=settings.get("first_frame_reuse_mode", "Use cached prompt")),
                 gr.update(visible=(settings.get("firstframe_mode", "LTX-Native") == "Z-Image First Frame")),
+                gr.update(visible=(settings.get("firstframe_mode", "LTX-Native") == "Z-Image First Frame"),
+                          value=settings.get("zimage_backend", "LTX Desktop")),
                 settings.get("vocal_prompt_mode", "Use Singer/Band Description"),
                 settings.get("last_gen_mode", "Generate Remaining Shots"),
                 settings.get("last_versions", 1),
@@ -230,6 +232,7 @@ def build_app():
                 # Tab 3 generation preferences
                 t3["vid_firstframe_mode"], t3["llm_image_prompt_dropdown"],
                 t3["first_frame_reuse_dropdown"], t3["first_frame_prompt_row"],
+                t3["vid_zimage_backend"],
                 t3["vid_vocal_prompt_mode"], t3["vid_gen_mode_dropdown"],
                 t3["vid_versions_dropdown"], t3["vid_resolution_dropdown"],
                 t3["single_shot_camera_dropdown"], t3["vid_director_dropdown"],

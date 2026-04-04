@@ -348,6 +348,24 @@ if system == "Windows":
 
 ---
 
+## LTX Desktop Auth Fix (latest version)
+
+Recent versions of LTX Desktop enable token-based authentication by default, which blocks Synesthesia's API calls with a **401 Unauthorized** error. To disable it:
+
+1. Open `ltx2_server.py` inside your LTX Desktop installation:
+   `LTX Desktop\resources\backend\ltx2_server.py`
+2. Find this line:
+```python
+auth_token = os.environ.get("LTX_AUTH_TOKEN", "")
+```
+3. Change it to:
+```python
+auth_token = ""
+```
+4. Save the file and restart LTX Desktop.
+
+---
+
 ## ⚠️ Performance: Avoiding LTX RAM Leakage
 
 LTX Desktop can silently overflow from GPU VRAM into system RAM during a session. Once this happens, generation slows by approximately **10x** — a clip that normally takes 15 seconds can take 2–3 minutes.

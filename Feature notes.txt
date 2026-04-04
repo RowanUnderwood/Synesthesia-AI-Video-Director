@@ -1,8 +1,8 @@
 Develop a plan for the following:
 
-Check how resolution downgrades are currently being handled.  Looks like 5-second shots are being incorrectly down-graded to 720p (probably a rounding error).
+Take a look in the comfyapi directory and develop a new feature for Synesthesia to talk to a comfyui api in addition to LTX -- similar to how reimagine.py does it.  We will make use of the existing ZImage_Poster_API.json file also.  For now this feature will only be for Z-image first frame and only needs to support this one json file.  
 
-Also, we need to take another look at "vocal Chain last frame" on tab 3.  This should be separated out from first frame mode so the user can still choose LTX-native plus "Chain last frame" OR Z-image first frame plus "Chain last frame."  In these instances obviously only the first frame of the series of vocal shots would be effected by the selection of Z vs LTX and the remainder in that series would get the last frame of the previous shot.   
+Two GUI updates will be needed.  When Z-image First Frame is selected, spawn a drop-down to select between the LTX-desktop or Comfy API's.  On tab 6 add a spot for the user to add the Comfy API location.        
 
 Also think about any gotcha's or inconsistencies with this plan and develop fixes before we start.
 
