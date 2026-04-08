@@ -21,18 +21,40 @@ class LLMBridge:
     def __init__(self, base_url=None):
         self.base_url = base_url if base_url is not None else config.LM_STUDIO_URL
 
+    def _is_minimax_model(self, model):
+        return str(model).lower().startswith("minimax")
+
+    def _get_headers(self, model):
+        if self._is_minimax_model(model) and config.MINIMAX_API_KEY:
+            return {"Authorization": f"Bearer {config.MINIMAX_API_KEY}"}
+        return {}
+
+    def _get_base_url(self, model):
+        if self._is_minimax_model(model):
+            return config.MINIMAX_BASE_URL
+        return self.base_url
+
     def get_models(self):
+        models = []
+        if config.LLM_PROVIDER == "MiniMax":
+            return list(config.MINIMAX_MODELS)
         try:
             resp = requests.get(f"{self.base_url}/models", timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
-                return [m['id'] for m in data['data']]
+                models = [m['id'] for m in data['data']]
         except Exception:
             pass
-        return ["qwen3-vl-8b-instruct-abliterated-v2.0"]
+        if not models:
+            models = ["qwen3-vl-8b-instruct-abliterated-v2.0"]
+        return models
 
     def query(self, system_prompt, user_prompt, model, temperature=0.7):
-        url = f"{self.base_url}/chat/completions"
+        base_url = self._get_base_url(model)
+        url = f"{base_url}/chat/completions"
+        # MiniMax requires temperature in (0.0, 1.0]; clamp if needed
+        if self._is_minimax_model(model):
+            temperature = max(0.01, min(1.0, temperature))
         payload = {
             "model": model,
             "messages": [
@@ -41,8 +63,9 @@ class LLMBridge:
             ],
             "temperature": temperature
         }
+        headers = self._get_headers(model)
         try:
-            resp = requests.post(url, json=payload, timeout=600)
+            resp = requests.post(url, json=payload, headers=headers, timeout=600)
             if resp.status_code != 200:
                 return f"Error {resp.status_code} from LLM: {resp.text}"
             return resp.json()['choices'][0]['message']['content'].strip()

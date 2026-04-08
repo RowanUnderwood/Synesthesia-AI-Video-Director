@@ -32,11 +32,28 @@ def build(pm_state, llm_dropdown):
                 placeholder="Leave blank for no auth (vanilla LTX Desktop)",
                 info="Set to match LTX_AUTH_TOKEN in your LTX Desktop fork. Leave blank for stock LTX Desktop.",
             )
+        with gr.Row():
+            llm_provider_drp = gr.Dropdown(
+                choices=["LM Studio", "MiniMax"],
+                value=config.LLM_PROVIDER,
+                label="LLM Provider",
+                info="Choose between a local LM Studio instance or the MiniMax cloud API.",
+            )
             lm_url_in = gr.Textbox(
                 label="LLM API URL (LM Studio / llama.cpp)",
                 value=config.LM_STUDIO_URL,
                 placeholder="http://127.0.0.1:1234/v1",
+                visible=(config.LLM_PROVIDER != "MiniMax"),
             )
+            minimax_api_key_in = gr.Textbox(
+                label="MiniMax API Key",
+                value=config.MINIMAX_API_KEY,
+                placeholder="Enter your MINIMAX_API_KEY",
+                type="password",
+                visible=(config.LLM_PROVIDER == "MiniMax"),
+                info="Obtain your key from platform.minimax.io. Uses the overseas endpoint api.minimax.io.",
+            )
+        with gr.Row():
             electricity_cost_in = gr.Number(
                 label="Electricity Cost ($/kWh)",
                 value=config.ELECTRICITY_COST,
@@ -209,22 +226,35 @@ Pinokio sandboxes Wan2GP in its own Python environment — you must use Pinokio'
         outputs=[video_backend_drp, video_api_url_in, wan2gp_accordion, backend_switch_status],
     )
 
-    def handle_save_settings(video_url, ltx_auth_token, lm_url, backend, electricity_cost, system_wattage, gpu_monitor):
+    def on_llm_provider_change(provider):
+        is_minimax = (provider == "MiniMax")
+        return gr.update(visible=not is_minimax), gr.update(visible=is_minimax)
+
+    llm_provider_drp.change(
+        on_llm_provider_change,
+        inputs=[llm_provider_drp],
+        outputs=[lm_url_in, minimax_api_key_in],
+    )
+
+    def handle_save_settings(video_url, ltx_auth_token, lm_url, minimax_api_key, llm_provider, backend, electricity_cost, system_wattage, gpu_monitor):
         settings = {
             "ltx_base_url": video_url,
             "ltx_auth_token": ltx_auth_token,
             "lm_studio_url": lm_url,
+            "minimax_api_key": minimax_api_key,
+            "llm_provider": llm_provider,
             "video_backend": backend,
             "electricity_cost": electricity_cost,
             "system_wattage": system_wattage,
             "gpu_monitor_index": gpu_monitor,
         }
         status = config.save_global_url_settings(settings)
-        return status, gr.update(choices=LLMBridge().get_models())
+        updated_models = LLMBridge().get_models()
+        return status, gr.update(choices=updated_models)
 
     save_settings_btn.click(
         handle_save_settings,
-        inputs=[video_api_url_in, ltx_auth_token_in, lm_url_in, video_backend_drp, electricity_cost_in, system_wattage_in, gpu_monitor_drp],
+        inputs=[video_api_url_in, ltx_auth_token_in, lm_url_in, minimax_api_key_in, llm_provider_drp, video_backend_drp, electricity_cost_in, system_wattage_in, gpu_monitor_drp],
         outputs=[settings_status, llm_dropdown],
     )
 
