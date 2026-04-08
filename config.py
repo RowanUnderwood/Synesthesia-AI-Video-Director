@@ -9,6 +9,10 @@ import glob
 LTX_BASE_URL = "http://127.0.0.1:8000/api"
 LTX_AUTH_TOKEN: str = ""  # Bearer token for LTX Desktop auth; empty = no auth (vanilla LTX)
 LM_STUDIO_URL = "http://127.0.0.1:1234/v1"
+LLM_PROVIDER = "LM Studio"  # "LM Studio" | "MiniMax"
+MINIMAX_API_KEY = ""
+MINIMAX_BASE_URL = "https://api.minimax.io/v1"
+MINIMAX_MODELS = ["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]
 VIDEO_BACKEND = "LTX Desktop"  # "LTX Desktop" | "Wan2GP"
 ELECTRICITY_COST = 0.1805  # USD per kWh (default 18.05¢)
 SYSTEM_WATTAGE = 600.0     # Watts, full system draw during generation (default: RTX 5090 system)
@@ -533,7 +537,7 @@ def save_global_llm(model_id):
         pass
 
 def load_global_url_settings():
-    global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, VIDEO_BACKEND, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
+    global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, LLM_PROVIDER, MINIMAX_API_KEY, VIDEO_BACKEND, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
     try:
         if os.path.exists(GLOBAL_SETTINGS_FILE):
             with open(GLOBAL_SETTINGS_FILE, "r") as f:
@@ -541,6 +545,8 @@ def load_global_url_settings():
                 LTX_BASE_URL = data.get("ltx_base_url", LTX_BASE_URL)
                 LTX_AUTH_TOKEN = data.get("ltx_auth_token", LTX_AUTH_TOKEN)
                 LM_STUDIO_URL = data.get("lm_studio_url", LM_STUDIO_URL)
+                LLM_PROVIDER = data.get("llm_provider", LLM_PROVIDER)
+                MINIMAX_API_KEY = data.get("minimax_api_key", MINIMAX_API_KEY)
                 VIDEO_BACKEND = data.get("video_backend", VIDEO_BACKEND)
                 ELECTRICITY_COST = float(data.get("electricity_cost", ELECTRICITY_COST))
                 SYSTEM_WATTAGE = float(data.get("system_wattage", SYSTEM_WATTAGE))
@@ -550,10 +556,12 @@ def load_global_url_settings():
 
 def save_global_url_settings(settings: dict):
     """Accept a settings dict and persist all global settings to disk."""
-    global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, VIDEO_BACKEND, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
+    global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, LLM_PROVIDER, MINIMAX_API_KEY, VIDEO_BACKEND, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
     LTX_BASE_URL = str(settings.get("ltx_base_url", LTX_BASE_URL)).strip()
     LTX_AUTH_TOKEN = str(settings.get("ltx_auth_token", LTX_AUTH_TOKEN)).strip()
     LM_STUDIO_URL = str(settings.get("lm_studio_url", LM_STUDIO_URL)).strip()
+    LLM_PROVIDER = settings.get("llm_provider", LLM_PROVIDER)
+    MINIMAX_API_KEY = str(settings.get("minimax_api_key", MINIMAX_API_KEY)).strip()
     VIDEO_BACKEND = settings.get("video_backend", VIDEO_BACKEND)
     ELECTRICITY_COST = float(settings.get("electricity_cost", ELECTRICITY_COST))
     SYSTEM_WATTAGE = float(settings.get("system_wattage", SYSTEM_WATTAGE))
@@ -568,6 +576,8 @@ def save_global_url_settings(settings: dict):
             "ltx_base_url": LTX_BASE_URL,
             "ltx_auth_token": LTX_AUTH_TOKEN,
             "lm_studio_url": LM_STUDIO_URL,
+            "llm_provider": LLM_PROVIDER,
+            "minimax_api_key": MINIMAX_API_KEY,
             "video_backend": VIDEO_BACKEND,
             "electricity_cost": ELECTRICITY_COST,
             "system_wattage": SYSTEM_WATTAGE,
