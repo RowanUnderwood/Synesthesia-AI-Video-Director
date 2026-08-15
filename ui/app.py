@@ -60,13 +60,13 @@ def build_app():
 
         # ==========================================
         # BACKEND CHANGE → CAP MAX DURATION SLIDER
-        def on_backend_change_cap(backend):
+        def on_backend_change_cap(backend, cur_val):
             max_val = 3 if backend == "Wan2GP" else 5
-            return gr.update(maximum=max_val)
+            return gr.update(maximum=max_val, value=min(cur_val, max_val))
 
         t5["video_backend_drp"].change(
             on_backend_change_cap,
-            inputs=[t5["video_backend_drp"]],
+            inputs=[t5["video_backend_drp"], t2["max_shot_dur"]],
             outputs=[t2["max_shot_dur"]],
         )
 
@@ -81,7 +81,7 @@ def build_app():
 
             _blank_update = gr.update()
             if "already exists" in msg or "Invalid" in msg:
-                return (msg,) + (_blank_update,) * 26
+                return (msg,) + (_blank_update,) * 28
 
             settings = pm.load_project_settings()
             df = pd.DataFrame(columns=config.REQUIRED_COLUMNS)
@@ -113,6 +113,8 @@ def build_app():
                 settings.get("bible_sys_prompt", config.CHARACTER_BIBLE_SYSTEM_PROMPT),
                 settings.get("bible_user_template", config.CHARACTER_BIBLE_USER_TEMPLATE),
                 settings.get("zimage_prompt_template", config.DEFAULT_ZIMAGE_PROMPT_CONVERSION_TEMPLATE),
+                gr.update(choices=[], value=None),  # single_shot_dropdown — reset on new project
+                gr.update(value=None),              # single_shot_type_radio
             )
 
         t1["create_btn"].click(
@@ -128,7 +130,8 @@ def build_app():
                      t5["perf_sys_prompt_scripted_in"], t5["perf_user_template_scripted_in"],
                      t5["concepts_bulk_template_in"], t5["concepts_vocals_template_in"], t5["concepts_scripted_template_in"],
                      t5["bible_sys_prompt_in"], t5["bible_user_template_in"],
-                     t5["zimage_template_in"]]
+                     t5["zimage_template_in"],
+                     t3["single_shot_dropdown"], t3["single_shot_type_radio"]]
         )
 
         def handle_load(name, pm):
@@ -145,6 +148,7 @@ def build_app():
             loaded_mode = settings.get("video_mode", "Intercut")
             is_scripted = (loaded_mode == "Scripted")
             is_intercut = (loaded_mode == "Intercut")
+            backend_max = 3 if config.VIDEO_BACKEND == "Wan2GP" else 5
 
             bible_df = pd.DataFrame(
                 list(pm.character_bibles.items()), columns=["character_name", "description"]
@@ -154,7 +158,7 @@ def build_app():
                 msg, time_str, df, lyrics, v_path, s_path,
                 gr.update(value=settings.get("min_silence", 700), visible=is_intercut),
                 gr.update(value=settings.get("silence_thresh", -45), visible=is_intercut),
-                settings.get("shot_mode", "Random"), settings.get("min_dur", 2), settings.get("max_dur", 4),
+                settings.get("shot_mode", "Random"), settings.get("min_dur", 2), min(settings.get("max_dur", 4), backend_max),
                 settings.get("llm_model", "qwen3-vl-8b-instruct-abliterated-v2.0"), settings.get("rough_concept", ""),
                 settings.get("plot", ""),
                 settings.get("prompt_template", config.DEFAULT_CONCEPT_PROMPT),
@@ -204,6 +208,16 @@ def build_app():
                 settings.get("last_director", "None"),
                 settings.get("last_style", "None"),
                 settings.get("vocal_chain_mode", False),
+                gr.update(
+                    visible=(config.VIDEO_BACKEND == "LTX2.3-Multifunctional"),
+                    value=settings.get("last_lora", "None"),
+                ),
+                # Tab 3 shot selector — populate immediately on load, reset type radio
+                gr.update(
+                    choices=pm.df['Shot_ID'].dropna().unique().tolist() if not pm.df.empty else [],
+                    value=None,
+                ),
+                gr.update(value=None),  # single_shot_type_radio
             )
 
         t1["load_btn"].click(
@@ -238,7 +252,16 @@ def build_app():
                 t3["single_shot_camera_dropdown"], t3["vid_director_dropdown"],
                 t3["vid_style_dropdown"],
                 t3["vid_vocal_chain_checkbox"],
+                t3["lora_row"],
+                # Tab 3 shot selector
+                t3["single_shot_dropdown"], t3["single_shot_type_radio"],
             ]
+        )
+
+        t5["video_backend_drp"].change(
+            lambda backend: gr.update(visible=(backend == "LTX2.3-Multifunctional")),
+            inputs=[t5["video_backend_drp"]],
+            outputs=[t3["lora_row"]],
         )
 
     return app

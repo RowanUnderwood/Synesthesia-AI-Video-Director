@@ -9,7 +9,7 @@ import glob
 LTX_BASE_URL = "http://127.0.0.1:8000/api"
 LTX_AUTH_TOKEN: str = ""  # Bearer token for LTX Desktop auth; empty = no auth (vanilla LTX)
 LM_STUDIO_URL = "http://127.0.0.1:1234/v1"
-VIDEO_BACKEND = "LTX Desktop"  # "LTX Desktop" | "Wan2GP"
+VIDEO_BACKEND = "LTX Desktop"  # "LTX Desktop" | "Wan2GP" | "LTX2.3-Multifunctional"
 COMFYUI_URL = "http://127.0.0.1:8188"  # Base URL for ComfyUI (Z-Image backend only)
 ELECTRICITY_COST = 0.1805  # USD per kWh (default 18.05¢)
 SYSTEM_WATTAGE = 600.0     # Watts, full system draw during generation (default: RTX 5090 system)
@@ -471,7 +471,7 @@ GLOBALIZABLE_KEYS = frozenset({
     "firstframe_mode", "llm_image_prompt_mode", "first_frame_reuse_mode",
     "vocal_prompt_mode", "vocal_chain_mode", "last_resolution", "last_versions",
     "last_camera_motion", "last_director", "last_style",
-    "zimage_backend",
+    "zimage_backend", "last_lora",
 })
 
 _CODE_DEFAULTS = {
@@ -507,6 +507,7 @@ _CODE_DEFAULTS = {
     "last_director": "None",
     "last_style": "None",
     "zimage_backend": "LTX Desktop",
+    "last_lora": "None",
 }
 
 # ==========================================

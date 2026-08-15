@@ -4,3 +4,4 @@ __pycache__/
 LTX-API-Files/
 .git/
 run-dev.bat
+launcher_config.json

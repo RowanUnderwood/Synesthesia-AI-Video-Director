@@ -213,17 +213,23 @@ def get_video_count_for_shot(shot_id, vid_list):
     return count
 
 def _discover_zimage_url():
-    """Discover the Z-Image endpoint URL via the LTX Desktop OpenAPI schema.
-    Queries /openapi.json at the host root, finds the route whose requestBody
-    references GenerateImageRequest, and returns the full URL.
-    Caches the result after first success. Returns None on failure."""
+    """Discover the Z-Image endpoint URL.
+    For LTX2.3-Multifunctional the endpoint is fixed at /api/generate-image.
+    For LTX Desktop, queries /openapi.json and finds the route whose requestBody
+    references GenerateImageRequest. Caches the result after first success.
+    Returns None on failure."""
     global _zimage_url_cache
-    if _zimage_url_cache:
-        return _zimage_url_cache
 
     # Extract host root: strip trailing /api or /api/ from LTX_BASE_URL
     base = config.LTX_BASE_URL.rstrip('/')
     host = base[:-4] if base.endswith('/api') else base  # e.g. http://127.0.0.1:8000
+
+    # LTX2.3-Multifunctional has a fixed, known endpoint — skip OpenAPI discovery
+    if config.VIDEO_BACKEND == "LTX2.3-Multifunctional":
+        return f"{host}/api/generate-image"
+
+    if _zimage_url_cache:
+        return _zimage_url_cache
 
     try:
         _url = f"{host}/openapi.json"
@@ -544,7 +550,7 @@ def _has_valid_cached_first_frame(item: dict, pm) -> bool:
         return False
 
 
-def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, director=None, generation_mode="LTX-Native", camera_motion="none", use_llm_image_prompt=False, caching_mode="Use cached prompt", vocal_chain_mode=False, zimage_backend="LTX Desktop"):
+def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, director=None, generation_mode="LTX-Native", camera_motion="none", use_llm_image_prompt=False, caching_mode="Use cached prompt", vocal_chain_mode=False, zimage_backend="LTX Desktop", lora_path=None):
     reuse_first_frame = (caching_mode == "Use cached image")
     skip_prompt_cache = (caching_mode == "Regenerate both on each render")
     row_idx = pm.df.index[pm.df['Shot_ID'].astype(str).str.upper() == str(shot_id).upper()].tolist()
@@ -613,6 +619,11 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
         "cameraMotion": camera_motion,
         "audio": False
     }
+
+    # LoRA support (LTX2.3-Multifunctional only)
+    if config.VIDEO_BACKEND == "LTX2.3-Multifunctional" and lora_path and lora_path != "None":
+        payload["loraPath"] = lora_path
+        payload["loraStrength"] = 1.0
 
     # --- Vocal Chain: extend duration by 1s to produce a look-ahead chain frame ---
     # Generating 1 extra second allows us to extract a frame just past the shot's intended
@@ -871,8 +882,16 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
         try:
             _url = f"{config.LTX_BASE_URL}/generate"
             _hdrs = _ltx_headers()
-            _log_ltx_request("POST", _url, _hdrs, payload)
-            resp = requests.post(_url, json=payload, headers=_hdrs)
+            # LTX2.3-Multifunctional expects duration/fps/audio as strings
+            _send_payload = payload.copy()
+            if config.VIDEO_BACKEND == "LTX2.3-Multifunctional":
+                _send_payload["duration"] = str(_send_payload["duration"])
+                _send_payload["fps"] = str(_send_payload["fps"])
+                _send_payload["audio"] = "true" if _send_payload["audio"] else "false"
+            else:
+                _send_payload = payload
+            _log_ltx_request("POST", _url, _hdrs, _send_payload)
+            resp = requests.post(_url, json=_send_payload, headers=_hdrs)
             resp.raise_for_status()
             result_container['response'] = resp.json()
         except requests.exceptions.RequestException as e:

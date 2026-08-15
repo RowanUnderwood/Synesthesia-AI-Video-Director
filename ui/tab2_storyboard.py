@@ -243,10 +243,10 @@ def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
     bible_table.change(save_bible_edits, inputs=[bible_table, pm_state])
 
     export_csv_btn.click(lambda pm: pm.export_csv(), inputs=[pm_state], outputs=csv_downloader)
-    import_csv_btn.upload(lambda f, pm: pm.import_csv(f), inputs=[import_csv_btn, pm_state], outputs=[import_status, shot_table])
+    import_csv_btn.upload(lambda f, pm: pm.import_csv(f), inputs=[import_csv_btn, pm_state], outputs=[import_status, shot_table]).then(lambda: gr.update(value=None), outputs=[import_csv_btn])
     download_story_btn.click(generate_story_file, inputs=[pm_state], outputs=[story_downloader])
     export_bibles_btn.click(lambda pm: pm.export_character_bibles(), inputs=[pm_state], outputs=bibles_downloader)
-    import_bibles_btn.upload(lambda f, pm: pm.import_character_bibles(f), inputs=[import_bibles_btn, pm_state], outputs=[import_bibles_status, bible_table])
+    import_bibles_btn.upload(lambda f, pm: pm.import_character_bibles(f), inputs=[import_bibles_btn, pm_state], outputs=[import_bibles_status, bible_table]).then(lambda: gr.update(value=None), outputs=[import_bibles_btn])
 
     def save_manual_df_edits(new_df, pm):
         if pm.current_project:

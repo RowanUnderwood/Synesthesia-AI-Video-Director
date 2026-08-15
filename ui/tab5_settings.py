@@ -4,8 +4,9 @@ import config
 from models import LLMBridge
 
 _DEFAULT_URLS = {
-    "LTX Desktop": "http://127.0.0.1:8000/api",
-    "Wan2GP":       "http://127.0.0.1:7862/api",
+    "LTX Desktop":            "http://127.0.0.1:8000/api",
+    "Wan2GP":                 "http://127.0.0.1:7862/api",
+    "LTX2.3-Multifunctional": "http://127.0.0.1:3000/api",
 }
 
 
@@ -17,7 +18,7 @@ def build(pm_state, llm_dropdown):
         gr.Markdown("These settings apply globally across all projects and are saved immediately on click.")
         with gr.Row():
             video_backend_drp = gr.Dropdown(
-                choices=["LTX Desktop", "Wan2GP"],
+                choices=["LTX Desktop", "Wan2GP", "LTX2.3-Multifunctional"],
                 value=config.VIDEO_BACKEND,
                 label="Video Generation Backend",
             )
@@ -179,6 +180,36 @@ Pinokio sandboxes Wan2GP in its own Python environment — you must use Pinokio'
 | `ltx2_22B_distilled` | ~24 GB | Best quality (same engine as LTX Desktop) |
 """)
 
+        with gr.Accordion("LTX2.3-Multifunctional Setup Instructions",
+                           open=(config.VIDEO_BACKEND == "LTX2.3-Multifunctional")) as ltx23_accordion:
+            gr.Markdown("""
+**LTX2.3-Multifunctional** is a community fork of LTX Desktop that adds LoRA support, batch generation,
+video retaking, upscaling, and more.
+
+> **Note:** LTX2.3-Multifunctional does **not** require an auth token — leave the Auth Token field blank.
+
+---
+
+#### Setup
+
+1. Clone or download [LTX2.3-Multifunctional](https://github.com/hero8152/LTX2.3-Multifunctional)
+   and follow its README to install dependencies.
+2. Start the server:
+   ```
+   run.bat
+   ```
+3. The API runs on port **3000** by default. Set **Video Backend API URL** above to
+   `http://127.0.0.1:3000/api` and click **Save Settings**.
+
+---
+
+#### LoRA Support
+
+When this backend is active, a **LoRA** dropdown appears in Tab 3. Click **🔄** to load the list of
+LoRA files from the backend's configured LoRA directory. Set the LoRA directory from within
+LTX2.3-Multifunctional's own settings if needed.
+""")
+
         backend_switch_status = gr.Textbox(label="", interactive=False, visible=True)
 
     # --- Events ---
@@ -194,6 +225,7 @@ Pinokio sandboxes Wan2GP in its own Python environment — you must use Pinokio'
                         gr.update(value="LTX Desktop"),
                         gr.update(value=_DEFAULT_URLS["LTX Desktop"]),
                         gr.update(open=False),
+                        gr.update(open=False),
                         gr.update(value=f"❌ Cannot switch to Wan2GP: shots {shot_ids} exceed 81 frames (3s max). Shorten or regenerate timeline first."),
                     )
             if df is not None and not df.empty and "Video_Path" in df.columns:
@@ -203,16 +235,24 @@ Pinokio sandboxes Wan2GP in its own Python environment — you must use Pinokio'
                         gr.update(value="LTX Desktop"),
                         gr.update(value=_DEFAULT_URLS["LTX Desktop"]),
                         gr.update(open=False),
+                        gr.update(open=False),
                         gr.update(value="❌ Cannot switch to Wan2GP: LTX-generated videos already exist. Delete them first to avoid timing mismatches."),
                     )
         url = _DEFAULT_URLS.get(backend, config.LTX_BASE_URL)
         is_wan2gp = (backend == "Wan2GP")
-        return gr.update(), gr.update(value=url), gr.update(open=is_wan2gp), gr.update(value="")
+        is_ltx23 = (backend == "LTX2.3-Multifunctional")
+        return (
+            gr.update(),
+            gr.update(value=url),
+            gr.update(open=is_wan2gp),
+            gr.update(open=is_ltx23),
+            gr.update(value=""),
+        )
 
     video_backend_drp.change(
         on_backend_change,
         inputs=[video_backend_drp, pm_state],
-        outputs=[video_backend_drp, video_api_url_in, wan2gp_accordion, backend_switch_status],
+        outputs=[video_backend_drp, video_api_url_in, wan2gp_accordion, ltx23_accordion, backend_switch_status],
     )
 
     def handle_save_settings(video_url, ltx_auth_token, lm_url, comfyui_url, backend, electricity_cost, system_wattage, gpu_monitor):
