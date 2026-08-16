@@ -1,0 +1,408 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "H3 MODEL — FL2VA"
+    }
+  },
+  "1756": {
+    "inputs": {
+      "attention": "comfy kitchen attention",
+      "model": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "ModelAttentionBackend",
+    "_meta": {
+      "title": "Attention Backend"
+    }
+  },
+  "977": {
+    "inputs": {
+      "lora_name": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "1756",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "H3 Turbo LoRA (8-step)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "shift_video": 12,
+      "shift_audio": 3,
+      "model": [
+        "977",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3SigmaShift",
+    "_meta": {
+      "title": "H3 Sigma Shift"
+    }
+  },
+  "2": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "H3 TEXT ENCODER"
+    }
+  },
+  "3": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "H3 Video VAE"
+    }
+  },
+  "4": {
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "H3 Audio VAE"
+    }
+  },
+  "973": {
+    "inputs": {
+      "sampler_name": "res_multistep"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "Global KSamplerSelect"
+    }
+  },
+  "970": {
+    "inputs": {
+      "value": 8
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Global Steps"
+    }
+  },
+  "910": {
+    "inputs": {
+      "image": "Hnaud0c.jpeg"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "STEP 1A — FACE / IDENTITY REFERENCE"
+    }
+  },
+  "911": {
+    "inputs": {
+      "image": "U5sWKad.jpeg"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "STEP 1B — FULL-BODY / WARDROBE REFERENCE"
+    }
+  },
+  "940": {
+    "inputs": {
+      "audio": "shot_test_vocals_0117.wav"
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "STEP 2 — SHOT AUDIO (≥ 15.09 s)"
+    }
+  },
+  "100": {
+    "inputs": {
+      "aspect_ratio": "16:9 (Widescreen)",
+      "megapixels": 0.5,
+      "multiple": 32
+    },
+    "class_type": "ResolutionSelector",
+    "_meta": {
+      "title": "SHOT RESOLUTION — 0.5 MP / 16:9 (960×544)"
+    }
+  },
+  "101": {
+    "inputs": {
+      "value": 15
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "SHOT DURATION (SECONDS) — MAX 15"
+    }
+  },
+  "102": {
+    "inputs": {
+      "expression": "min(max(5, round(a * 24)), 362) + (5 - (min(max(5, round(a * 24)), 362) % 17)) % 17",
+      "values.a": [
+        "101",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "H3 FRAME LENGTH (17k+5, CAPPED 362)"
+    }
+  },
+  "110": {
+    "inputs": {
+      "prompt": "subject_definitions:\n<Subject 1> is the same performer defined jointly by <Picture 1> for facial identity and <Picture 2> for full-body appearance, wardrobe, body proportions, and distinctive details.\n<Audio 1> is the current original-song segment and the vocal, lyric, melody, rhythm, and performance reference for <Subject 1> (S1).\n\nsummary:\n[reference generation + audio reference] Begin one continuous dreamlike performance in a dim room facing a glowing doorway, with memory already behaving strangely around <Subject 1>.\n\nretention_analysis:\n<Subject 1> (appears throughout [Shot 1]): fully_preserved - preserve facial identity, hair identity, body proportions, wardrobe, colors, and distinctive referenced features while expression, pose, lighting, framing, and movement follow the performance.\n<Audio 1>: reference - use its lyric content, intimate vocal delivery, breaths, melody, rhythm, and dynamics to drive the visible performance.\n\ndetailed_description:\n[Shot 1] Begin in a dim narrow room with a softly glowing doorway and an indistinct human-shaped blur beyond it. The camera glides backward at chest height and slowly begins a clockwise arc. <Subject 1> (S1) visibly sings with clear readable mouth and jaw movement throughout the vocal phrase: <d>[English] You were young in the doorway, I was tired in your coat. You asked if I was leaving.</d>\n\nA translucent coat-like afterimage drifts around her shoulders without replacing her real wardrobe. The blurred figure raises one hand. The room subtly bends toward the doorway as if perspective itself is listening. <Subject 1> begins turning toward the raised hand while continuing to perform.\n\nSettle on her completed turn as the camera arc comes to rest, the raised hand lowers, and the translucent fabric stills.\n\noverall_soundscape:\nVery subtle room tone, cloth movement, and faint air through the doorway beneath the song.\n\nnon_diegetic_music:\n<Audio 1> drives the intimate singing, breathing, body rhythm, and emotional timing.",
+      "width": [
+        "100",
+        0
+      ],
+      "height": [
+        "100",
+        1
+      ],
+      "length": [
+        "102",
+        1
+      ],
+      "ref_image_size": "match",
+      "clip": [
+        "2",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ],
+      "audio_vae": [
+        "4",
+        0
+      ],
+      "ref_images.ref_image_0": [
+        "910",
+        0
+      ],
+      "ref_images.ref_image_1": [
+        "911",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "_meta": {
+      "title": "STEP 3 — SHOT PROMPT"
+    }
+  },
+  "1755": {
+    "inputs": {
+      "clip_start_seconds": 0,
+      "context_length": 0,
+      "source_fps": 24,
+      "crop": "disabled",
+      "latent": [
+        "110",
+        1
+      ],
+      "audio_vae": [
+        "4",
+        0
+      ],
+      "master_audio": [
+        "940",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3SongMaskedAVContext",
+    "_meta": {
+      "title": "SHOT — SONG LOCKED IN AUDIO LATENT / MASK 0"
+    }
+  },
+  "120": {
+    "inputs": {
+      "noise_seed": 514005817509111
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "SHOT SEED"
+    }
+  },
+  "121": {
+    "inputs": {
+      "model": [
+        "5",
+        0
+      ],
+      "conditioning": [
+        "110",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "Shot Guider"
+    }
+  },
+  "123": {
+    "inputs": {
+      "scheduler": "simple",
+      "steps": [
+        "970",
+        0
+      ],
+      "denoise": 1,
+      "model": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "Shot Scheduler — GLOBAL STEPS"
+    }
+  },
+  "124": {
+    "inputs": {
+      "noise": [
+        "120",
+        0
+      ],
+      "guider": [
+        "121",
+        0
+      ],
+      "sampler": [
+        "973",
+        0
+      ],
+      "sigmas": [
+        "123",
+        0
+      ],
+      "latent_image": [
+        "1755",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SHOT SAMPLER"
+    }
+  },
+  "2291": {
+    "inputs": {
+      "samples": [
+        "124",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "SHOT — VIDEO DECODE"
+    }
+  },
+  "2292": {
+    "inputs": {
+      "samples": [
+        "124",
+        0
+      ],
+      "vae": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "VAEDecodeAudio",
+    "_meta": {
+      "title": "SHOT — AUDIO DECODE"
+    }
+  },
+  "2293": {
+    "inputs": {
+      "frame_rate": 24,
+      "loop_count": 0,
+      "filename_prefix": "h3_shot/shot",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 17,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true,
+      "images": [
+        "2291",
+        0
+      ],
+      "audio": [
+        "2292",
+        0
+      ]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": {
+      "title": "OUTPUT — SHOT (NATIVE 960×544)"
+    }
+  },
+  "2401": {
+    "inputs": {
+      "denoise": false,
+      "denoise_quality": "Ultra",
+      "deblur": false,
+      "deblur_quality": "Ultra",
+      "upscale": "VSR",
+      "upscale_quality": "Ultra",
+      "resize_type": "Scale",
+      "scale": 2.0,
+      "megapixels": 2.0,
+      "width": 1920,
+      "height": 1080,
+      "divisible_by": "8",
+      "ratio_preset": "16:9",
+      "resize_method": "Center Crop (Fill)",
+      "device_id": 0,
+      "images": [
+        "2291",
+        0
+      ]
+    },
+    "class_type": "DaSiWa_RTX_UpscalerRefiner",
+    "_meta": {
+      "title": "RTX UPSCALE — VSR ULTRA 2×"
+    }
+  },
+  "2402": {
+    "inputs": {
+      "frame_rate": 24,
+      "loop_count": 0,
+      "filename_prefix": "h3_shot/shot_rtx",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 16,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true,
+      "images": [
+        "2401",
+        0
+      ],
+      "audio": [
+        "2292",
+        0
+      ]
+    },
+    "class_type": "VHS_VideoCombine",
+    "_meta": {
+      "title": "OUTPUT — SHOT (RTX 2× 1920×1088)"
+    }
+  }
+}

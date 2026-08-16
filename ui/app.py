@@ -52,7 +52,7 @@ def build_app():
                        vid_resolution_dropdown=t3["vid_resolution_dropdown"],
                        vid_gallery=t3["vid_gallery"],
                        gallery_paths_state=t3["gallery_paths_state"])
-            t5 = tab5.build(pm_state, llm_dropdown=t2["llm_dropdown"])
+            t5 = tab5.build(pm_state)
             tab6.build()
 
         # Wire Tab 2 generation events that depend on template components in Tab 5
@@ -61,7 +61,7 @@ def build_app():
         # ==========================================
         # BACKEND CHANGE → CAP MAX DURATION SLIDER
         def on_backend_change_cap(backend, cur_val):
-            max_val = 3 if backend == "Wan2GP" else 5
+            max_val = 3 if backend == "Wan2GP" else 15 if backend == "MiniMax H3" else 5
             return gr.update(maximum=max_val, value=min(cur_val, max_val))
 
         t5["video_backend_drp"].change(
@@ -81,7 +81,7 @@ def build_app():
 
             _blank_update = gr.update()
             if "already exists" in msg or "Invalid" in msg:
-                return (msg,) + (_blank_update,) * 28
+                return (msg,) + (_blank_update,) * 33
 
             settings = pm.load_project_settings()
             df = pd.DataFrame(columns=config.REQUIRED_COLUMNS)
@@ -113,6 +113,11 @@ def build_app():
                 settings.get("bible_sys_prompt", config.CHARACTER_BIBLE_SYSTEM_PROMPT),
                 settings.get("bible_user_template", config.CHARACTER_BIBLE_USER_TEMPLATE),
                 settings.get("zimage_prompt_template", config.DEFAULT_ZIMAGE_PROMPT_CONVERSION_TEMPLATE),
+                settings.get("h3_aspect", "3:4 - Photo"),
+                settings.get("h3_quality", "0.65 MP - Balanced"),
+                settings.get("h3_lipsync_output", "RTX Upscaled"),
+                gr.update(value=settings.get("h3_custom_width", 16), visible=(settings.get("h3_aspect", "3:4 - Photo") == "CUSTOM")),
+                gr.update(value=settings.get("h3_custom_height", 9), visible=(settings.get("h3_aspect", "3:4 - Photo") == "CUSTOM")),
                 gr.update(choices=[], value=None),  # single_shot_dropdown — reset on new project
                 gr.update(value=None),              # single_shot_type_radio
             )
@@ -131,6 +136,8 @@ def build_app():
                      t5["concepts_bulk_template_in"], t5["concepts_vocals_template_in"], t5["concepts_scripted_template_in"],
                      t5["bible_sys_prompt_in"], t5["bible_user_template_in"],
                      t5["zimage_template_in"],
+                     t3["h3_aspect_dropdown"], t3["h3_quality_dropdown"], t3["h3_lipsync_output_dropdown"],
+                     t3["h3_custom_width"], t3["h3_custom_height"],
                      t3["single_shot_dropdown"], t3["single_shot_type_radio"]]
         )
 
@@ -148,7 +155,20 @@ def build_app():
             loaded_mode = settings.get("video_mode", "Intercut")
             is_scripted = (loaded_mode == "Scripted")
             is_intercut = (loaded_mode == "Intercut")
-            backend_max = 3 if config.VIDEO_BACKEND == "Wan2GP" else 5
+            backend_max = 3 if config.VIDEO_BACKEND == "Wan2GP" else 15 if config.VIDEO_BACKEND == "MiniMax H3" else 5
+            saved_firstframe = settings.get("firstframe_mode", "LTX-Native")
+            if config.VIDEO_BACKEND == "MiniMax H3":
+                loaded_firstframe = saved_firstframe if saved_firstframe in ("Krea 2 First Frame", "Z-Image First Frame") else "Krea 2 First Frame"
+            else:
+                loaded_firstframe = saved_firstframe if saved_firstframe in ("LTX-Native", "Z-Image First Frame") else "LTX-Native"
+            uses_generated_firstframe = loaded_firstframe in ("Krea 2 First Frame", "Z-Image First Frame")
+            if loaded_firstframe != saved_firstframe or (
+                config.VIDEO_BACKEND == "MiniMax H3" and settings.get("zimage_backend") != "ComfyUI"
+            ):
+                migrated = {"firstframe_mode": loaded_firstframe}
+                if config.VIDEO_BACKEND == "MiniMax H3":
+                    migrated["zimage_backend"] = "ComfyUI"
+                pm.save_project_settings(migrated)
 
             bible_df = pd.DataFrame(
                 list(pm.character_bibles.items()), columns=["character_name", "description"]
@@ -159,7 +179,7 @@ def build_app():
                 gr.update(value=settings.get("min_silence", 700), visible=is_intercut),
                 gr.update(value=settings.get("silence_thresh", -45), visible=is_intercut),
                 settings.get("shot_mode", "Random"), settings.get("min_dur", 2), min(settings.get("max_dur", 4), backend_max),
-                settings.get("llm_model", "qwen3-vl-8b-instruct-abliterated-v2.0"), settings.get("rough_concept", ""),
+                settings.get("rough_concept", ""),
                 settings.get("plot", ""),
                 settings.get("prompt_template", config.DEFAULT_CONCEPT_PROMPT),
                 gr.update(value=settings.get("performance_desc", ""), label="Main Character and Setting Description" if is_scripted else "Singer, Band, and Venue Description (Also used as Prompt for Vocal Shots)"),
@@ -192,14 +212,18 @@ def build_app():
                 settings.get("last_ffp_style", "None"),
                 settings.get("last_ffp_director", "None"),
                 # Tab 3 generation preferences
-                settings.get("firstframe_mode", "LTX-Native") if settings.get("firstframe_mode", "LTX-Native") in ("LTX-Native", "Z-Image First Frame") else "LTX-Native",
-                gr.update(visible=(settings.get("firstframe_mode", "LTX-Native") == "Z-Image First Frame"),
+                gr.update(
+                    choices=(["Krea 2 First Frame", "Z-Image First Frame"] if config.VIDEO_BACKEND == "MiniMax H3" else ["LTX-Native", "Z-Image First Frame"]),
+                    value=loaded_firstframe,
+                ),
+                gr.update(visible=uses_generated_firstframe,
                           value=settings.get("llm_image_prompt_mode", "Use video prompt as-is")),
-                gr.update(visible=(settings.get("firstframe_mode", "LTX-Native") == "Z-Image First Frame"),
+                gr.update(visible=uses_generated_firstframe,
                           value=settings.get("first_frame_reuse_mode", "Use cached prompt")),
-                gr.update(visible=(settings.get("firstframe_mode", "LTX-Native") == "Z-Image First Frame")),
-                gr.update(visible=(settings.get("firstframe_mode", "LTX-Native") == "Z-Image First Frame"),
-                          value=settings.get("zimage_backend", "LTX Desktop")),
+                gr.update(visible=uses_generated_firstframe),
+                gr.update(visible=(loaded_firstframe == "Z-Image First Frame" and config.VIDEO_BACKEND != "MiniMax H3"),
+                          choices=(["ComfyUI"] if config.VIDEO_BACKEND == "MiniMax H3" else ["LTX Desktop", "ComfyUI", "ComfyUI-run-ahead"]),
+                          value=("ComfyUI" if config.VIDEO_BACKEND == "MiniMax H3" else settings.get("zimage_backend", "LTX Desktop"))),
                 settings.get("vocal_prompt_mode", "Use Singer/Band Description"),
                 settings.get("last_gen_mode", "Generate Remaining Shots"),
                 settings.get("last_versions", 1),
@@ -212,6 +236,11 @@ def build_app():
                     visible=(config.VIDEO_BACKEND == "LTX2.3-Multifunctional"),
                     value=settings.get("last_lora", "None"),
                 ),
+                settings.get("h3_aspect", "3:4 - Photo"),
+                settings.get("h3_quality", "0.65 MP - Balanced"),
+                settings.get("h3_lipsync_output", "RTX Upscaled"),
+                gr.update(value=settings.get("h3_custom_width", 16), visible=(settings.get("h3_aspect", "3:4 - Photo") == "CUSTOM")),
+                gr.update(value=settings.get("h3_custom_height", 9), visible=(settings.get("h3_aspect", "3:4 - Photo") == "CUSTOM")),
                 # Tab 3 shot selector — populate immediately on load, reset type radio
                 gr.update(
                     choices=pm.df['Shot_ID'].dropna().unique().tolist() if not pm.df.empty else [],
@@ -226,7 +255,7 @@ def build_app():
             outputs=[
                 t1["proj_status"], t1["time_spent_disp"], t2["shot_table"], t1["lyrics_in"], t1["vocals_up"], t1["song_up"],
                 t2["min_silence_sl"], t2["silence_thresh_sl"], t2["shot_mode_drp"], t2["min_shot_dur"], t2["max_shot_dur"],
-                t2["llm_dropdown"], t2["rough_concept_in"], t2["plot_out"], t5["prompt_template_in"],
+                t2["rough_concept_in"], t2["plot_out"], t5["prompt_template_in"],
                 t2["performance_desc_in"],
                 current_proj_var,
                 t3["vid_gallery"], t3["gallery_paths_state"], t3["vid_gen_start_btn"],
@@ -253,6 +282,8 @@ def build_app():
                 t3["vid_style_dropdown"],
                 t3["vid_vocal_chain_checkbox"],
                 t3["lora_row"],
+                t3["h3_aspect_dropdown"], t3["h3_quality_dropdown"], t3["h3_lipsync_output_dropdown"],
+                t3["h3_custom_width"], t3["h3_custom_height"],
                 # Tab 3 shot selector
                 t3["single_shot_dropdown"], t3["single_shot_type_radio"],
             ]
@@ -262,6 +293,47 @@ def build_app():
             lambda backend: gr.update(visible=(backend == "LTX2.3-Multifunctional")),
             inputs=[t5["video_backend_drp"]],
             outputs=[t3["lora_row"]],
+        )
+
+        t5["video_backend_drp"].change(
+            lambda backend: gr.update(visible=(backend == "MiniMax H3")),
+            inputs=[t5["video_backend_drp"]],
+            outputs=[t3["h3_row"]],
+        )
+
+        def update_firstframe_backend(backend, current_mode, pm):
+            is_h3 = backend == "MiniMax H3"
+            choices = (["Krea 2 First Frame", "Z-Image First Frame"] if is_h3
+                       else ["LTX-Native", "Z-Image First Frame"])
+            selected = current_mode if current_mode in choices else ("Krea 2 First Frame" if is_h3 else "LTX-Native")
+            if pm and pm.current_project:
+                update = {"firstframe_mode": selected}
+                if is_h3:
+                    update["zimage_backend"] = "ComfyUI"
+                pm.save_project_settings(update)
+            generated = selected in ("Krea 2 First Frame", "Z-Image First Frame")
+            show_z_backend = selected == "Z-Image First Frame" and not is_h3
+            return (
+                backend,
+                gr.update(choices=choices, value=selected),
+                gr.update(visible=generated),
+                gr.update(visible=generated),
+                gr.update(visible=generated),
+                gr.update(visible=False),
+                gr.update(
+                    visible=show_z_backend,
+                    choices=(["ComfyUI"] if is_h3 else ["LTX Desktop", "ComfyUI", "ComfyUI-run-ahead"]),
+                    value=("ComfyUI" if is_h3 else "LTX Desktop"),
+                ),
+            )
+
+        t5["video_backend_drp"].change(
+            update_firstframe_backend,
+            inputs=[t5["video_backend_drp"], t3["vid_firstframe_mode"], pm_state],
+            outputs=[t3["backend_state"], t3["vid_firstframe_mode"],
+                     t3["llm_image_prompt_dropdown"], t3["first_frame_prompt_row"],
+                     t3["first_frame_reuse_dropdown"], t3["first_frame_img_status"],
+                     t3["vid_zimage_backend"]],
         )
 
     return app

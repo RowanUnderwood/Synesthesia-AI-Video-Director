@@ -11,25 +11,101 @@ import requests
 import pandas as pd
 
 import config
-from utils import get_file_path, get_ltx_duration
+from utils import get_file_path, get_ltx_duration, snap_to_frame
+
+
+CHARACTER_BIBLE_COLUMNS = ["character_name", "description"]
+
+
+def normalise_character_bible_table(value):
+    """Validate an editable Character Bible table and return ordered data plus a clean DataFrame."""
+    if value is None:
+        frame = pd.DataFrame(columns=CHARACTER_BIBLE_COLUMNS)
+    elif isinstance(value, pd.DataFrame):
+        frame = value.copy()
+    elif isinstance(value, list):
+        frame = pd.DataFrame(value, columns=CHARACTER_BIBLE_COLUMNS)
+    else:
+        raise ValueError("Character Bible data must be a table.")
+
+    missing = [column for column in CHARACTER_BIBLE_COLUMNS if column not in frame.columns]
+    if missing:
+        raise ValueError("Character Bible table must contain character_name and description columns.")
+
+    def _clean(cell):
+        if cell is None or (not isinstance(cell, (list, dict)) and pd.isna(cell)):
+            return ""
+        return str(cell).strip()
+
+    bibles = {}
+    names_by_key = {}
+    for row_number, (_, row) in enumerate(frame.iterrows(), start=1):
+        name = _clean(row.get("character_name"))
+        description = _clean(row.get("description"))
+        if not name and not description:
+            continue
+        if not name:
+            raise ValueError(f"Character Bible row {row_number} has a description but no character name.")
+        if not description:
+            raise ValueError(f"Character Bible row {row_number} ({name}) needs a description.")
+        key = name.casefold()
+        if key in names_by_key:
+            raise ValueError(
+                f"Duplicate character name: {name} conflicts with {names_by_key[key]}. "
+                "Character names are case-insensitive."
+            )
+        names_by_key[key] = name
+        bibles[name] = description
+
+    clean_frame = pd.DataFrame(list(bibles.items()), columns=CHARACTER_BIBLE_COLUMNS)
+    return bibles, clean_frame
 
 # ==========================================
 # LLM BRIDGE
 # ==========================================
 
 class LLMBridge:
-    def __init__(self, base_url=None):
-        self.base_url = base_url if base_url is not None else config.LM_STUDIO_URL
+    def __init__(self, base_url=None, api_token=None):
+        configured = base_url if base_url is not None else config.LM_STUDIO_URL
+        self.root_url = self._normalise_root_url(configured)
+        self.base_url = f"{self.root_url}/v1"
+        self.api_token = config.LM_STUDIO_API_TOKEN if api_token is None else str(api_token).strip()
 
-    def get_models(self):
-        try:
-            resp = requests.get(f"{self.base_url}/models", timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                return [m['id'] for m in data['data']]
-        except Exception:
-            pass
-        return ["qwen3-vl-8b-instruct-abliterated-v2.0"]
+    @staticmethod
+    def _normalise_root_url(url):
+        root = str(url or "").strip().rstrip("/")
+        for suffix in ("/api/v1", "/v1"):
+            if root.lower().endswith(suffix):
+                root = root[:-len(suffix)].rstrip("/")
+                break
+        if not root:
+            raise ValueError("LM Studio URL is empty.")
+        return root
+
+    def _headers(self):
+        headers = {"Content-Type": "application/json"}
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+        return headers
+
+    def get_models(self, vision_only=True):
+        """Return LM Studio model keys, optionally restricted to vision-capable LLMs."""
+        resp = requests.get(
+            f"{self.root_url}/api/v1/models", headers=self._headers(), timeout=10
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"Error {resp.status_code} listing LM Studio models: {resp.text}")
+        data = resp.json()
+        models = []
+        for model in data.get("models", []):
+            if model.get("type") != "llm":
+                continue
+            if vision_only and not model.get("capabilities", {}).get("vision", False):
+                continue
+            key = str(model.get("key") or "").strip()
+            if key:
+                models.append(key)
+        return models
 
     def query(self, system_prompt, user_prompt, model, temperature=0.7):
         url = f"{self.base_url}/chat/completions"
@@ -42,7 +118,7 @@ class LLMBridge:
             "temperature": temperature
         }
         try:
-            resp = requests.post(url, json=payload, timeout=600)
+            resp = requests.post(url, json=payload, headers=self._headers(), timeout=600)
             if resp.status_code != 200:
                 return f"Error {resp.status_code} from LLM: {resp.text}"
             return resp.json()['choices'][0]['message']['content'].strip()
@@ -115,7 +191,7 @@ class ProjectManager:
         clean_name = self.sanitize_name(name)
         path = os.path.join(self.base_dir, clean_name)
 
-        folders = ["assets", "audio_chunks", "videos", "renders", "cutting_room", "first_frames"]
+        folders = ["assets", "audio_chunks", "videos", "renders", "cutting_room", "first_frames", "h3_references", "h3_jobs"]
 
         if os.path.exists(path):
             return f"Project '{clean_name}' already exists."
@@ -278,10 +354,13 @@ class ProjectManager:
                     f"Use '.' as the decimal separator."
                 ), self.df
 
-            if raw_dur < 1.0 or raw_dur > 10.05:
-                return f"❌ Error: Duration for {shot_id} is {raw_dur}s — must be between 1 and 10 seconds.", self.df
+            max_duration = 15.0 if config.VIDEO_BACKEND == "MiniMax H3" else 10.05
+            if raw_dur < 1.0 or raw_dur > max_duration:
+                return f"❌ Error: Duration for {shot_id} is {raw_dur}s — must be between 1 and {max_duration:g} seconds.", self.df
 
-            snapped = get_ltx_duration(raw_dur)
+            # H3 render padding is never written into the project timeline: its
+            # exact 24-FPS start/end frames are what keep a long song in sync.
+            snapped = snap_to_frame(raw_dur) if config.VIDEO_BACKEND == "MiniMax H3" else get_ltx_duration(raw_dur)
             if abs(snapped - raw_dur) > 0.001:
                 snap_changes.append(shot_id)
             snapped_durations.append(snapped)
@@ -369,27 +448,31 @@ class ProjectManager:
     def import_character_bibles(self, file_obj):
         if file_obj is None:
             return "❌ No file provided.", None
+        if not self.current_project:
+            return "❌ Load a project before importing character bibles.", None
         try:
             path = file_obj.name if hasattr(file_obj, "name") else str(file_obj)
             df = pd.read_csv(path)
             if "character_name" not in df.columns or "description" not in df.columns:
                 return "❌ CSV must have 'character_name' and 'description' columns.", None
-            bibles = {}
-            for _, row in df.iterrows():
-                name = str(row.get("character_name", "")).strip()
-                desc = str(row.get("description", "")).strip()
-                if name and name.lower() != "nan":
-                    bibles[name] = desc
+            bibles, bible_df = normalise_character_bible_table(df)
             if not bibles:
                 return "❌ No valid entries found in CSV.", None
-            self.character_bibles = bibles
-            self.save_character_bibles()
-            self.update_characters_column()
-            self.save_data()
-            bible_df = pd.DataFrame(list(bibles.items()), columns=["character_name", "description"])
+            self.replace_character_bibles(bible_df)
             return f"✅ Imported {len(bibles)} character(s).", bible_df
         except Exception as e:
             return f"❌ Error importing bibles: {e}", None
+
+    def replace_character_bibles(self, value):
+        """Atomically validate and persist the project's complete Character Bible table."""
+        if not self.current_project:
+            raise ValueError("Load a project before saving character bibles.")
+        bibles, bible_df = normalise_character_bible_table(value)
+        self.character_bibles = bibles
+        self.save_character_bibles()
+        self.update_characters_column()
+        self.save_data()
+        return bible_df
 
     def save_data(self):
         if self.current_project:
@@ -507,10 +590,12 @@ def sync_video_directory(pm):
     vid_dir = pm.get_path("videos")
     if not os.path.exists(vid_dir): return "No videos directory."
 
-    mp4s = glob.glob(os.path.join(vid_dir, "*.mp4"))
+    video_files = []
+    for extension in ("*.mp4", "*.webm", "*.mov", "*.mkv"):
+        video_files.extend(glob.glob(os.path.join(vid_dir, extension)))
     shot_vids = {}
 
-    for v in mp4s:
+    for v in video_files:
         fname = os.path.basename(v)
         shot_id = fname.split("_")[0].upper()
         if shot_id not in shot_vids: shot_vids[shot_id] = []

@@ -5,12 +5,26 @@ import pandas as pd
 from pydub import AudioSegment
 
 import config
-from models import LLMBridge
 from timeline import get_existing_projects, scan_vocals_advanced, build_simple_timeline
 from llm_logic import (generate_overarching_plot, generate_performance_description,
                        generate_concepts_logic, generate_character_bibles_logic,
                        stop_gen, generate_story_file, generate_all_firstframe_prompts_logic)
+from h3 import generate_h3_character_references, h3_reference_gallery as get_h3_reference_gallery, h3_reference_paths
 from utils import get_file_path
+
+
+def h3_reference_ui_updates(pm, preferred=None):
+    """Return synchronized H3 character controls for the project's current bible state."""
+    names = list(pm.character_bibles) if pm and pm.current_project else []
+    settings = pm.load_project_settings() if pm and pm.current_project else {}
+    lead = settings.get("h3_lead_character", "")
+    selected = preferred if preferred in names else (lead if lead in names else (names[0] if names else None))
+    face, body = h3_reference_paths(pm, selected) if selected else (None, None)
+    return (
+        gr.update(choices=names, value=lead if lead in names else None),
+        gr.update(choices=names, value=selected),
+        face, body, get_h3_reference_gallery(pm) if pm and pm.current_project else [],
+    )
 
 
 def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
@@ -25,8 +39,8 @@ def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
                 silence_thresh_sl = gr.Slider(-60, -20, value=-45, label="Silence Threshold (dB)")
             with gr.Row():
                 shot_mode_drp = gr.Dropdown(["Fixed", "Random"], value="Random", label="Shot Duration Mode")
-                min_shot_dur = gr.Slider(1, 10, value=2, label="Min Duration (s)")
-                max_shot_dur = gr.Slider(1, 10, value=4, label="Max Duration (s)")
+                min_shot_dur = gr.Slider(1, 15, value=2, label="Min Duration (s)")
+                max_shot_dur = gr.Slider(1, 15, value=4, label="Max Duration (s)")
             with gr.Row():
                 gr.Markdown("ℹ️ Shots over 5 seconds require 720p or lower resolution. 1080p selections will automatically downgrade to 720p for these shots.")
             with gr.Row(visible=False) as scripted_duration_row:
@@ -38,17 +52,6 @@ def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
                 scan_status = gr.Textbox(label="Build Status", interactive=False)
 
         with gr.Accordion("Step 2: Plot & Concept Generation", open=True):
-            with gr.Row():
-                avail_models = LLMBridge().get_models()
-                last_model = config.get_global_llm()
-                if not last_model:
-                    last_model = avail_models[0] if avail_models else "qwen3-vl-8b-instruct-abliterated-v2.0"
-
-                llm_dropdown = gr.Dropdown(choices=avail_models, value=last_model, label="Select LLM Model", interactive=True, allow_custom_value=True)
-                refresh_llm_btn = gr.Button("🔄", size="sm")
-
-                llm_dropdown.change(config.save_global_llm, inputs=[llm_dropdown])
-
             with gr.Row():
                 rough_concept_in = gr.Textbox(label="Rough User Concept / Vibe (Optional)", placeholder="e.g. A cyberpunk rainstorm...", scale=2, lines=5)
                 with gr.Column(scale=1):
@@ -77,7 +80,7 @@ def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
                     "After generating video prompts, click **Generate Character Bibles** to have the LLM "
                     "identify all recurring named characters and build a visual description for each. "
                     "These descriptions are automatically injected into each LTX video prompt at generation time. "
-                    "Edit the table below to refine descriptions — changes auto-save."
+                    "Use **Add Character** for manual entries, then click **Save Changes** after editing the table."
                 )
                 gen_bible_btn = gr.Button("Generate Character Bibles")
                 bible_status = gr.Textbox(label="Bible Generation Status", interactive=False)
@@ -88,6 +91,31 @@ def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
                     wrap=True,
                     type="pandas"
                 )
+                with gr.Row():
+                    add_bible_character_btn = gr.Button("➕ Add Character")
+                    save_bible_changes_btn = gr.Button("💾 Save Changes", variant="primary")
+
+            with gr.Accordion("🧬 MiniMax H3 Character References", open=False):
+                gr.Markdown(
+                    "MiniMax H3 uses one face closeup and one full-body/wardrobe reference for each "
+                    "character. Generate references here before rendering H3 shots. Ref2VA uses the generated "
+                    "setting/target frame as Picture 1, then accepts up to four named bible characters per shot "
+                    "as Pictures 2–9 (two identity images per character)."
+                )
+                with gr.Row():
+                    h3_lead_character = gr.Dropdown(
+                        choices=[], label="Lead Singer for H3 Lip-Sync", info="Vocal H3 shots use this character's two references."
+                    )
+                    h3_reference_character = gr.Dropdown(
+                        choices=[], label="Character Reference to Generate / View"
+                    )
+                    h3_generate_character_btn = gr.Button("Generate / Regenerate Character Pair", variant="primary")
+                    h3_generate_all_btn = gr.Button("Generate All Character Pairs")
+                with gr.Row():
+                    h3_face_preview = gr.Image(label="Face Closeup", interactive=False, type="filepath")
+                    h3_body_preview = gr.Image(label="Full-Body Portrait", interactive=False, type="filepath")
+                h3_reference_status = gr.Textbox(label="H3 Reference Status", interactive=False)
+                h3_reference_gallery = gr.Gallery(label="Generated H3 Character References", columns=4, height=280, allow_preview=True)
 
         with gr.Row():
             gr.Markdown("### 📂 Data Management")
@@ -111,16 +139,16 @@ def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
 
     # --- Tab 2 Internal Events ---
 
-    t2_inputs = [current_proj_var, min_silence_sl, silence_thresh_sl, shot_mode_drp, min_shot_dur, max_shot_dur, llm_dropdown, rough_concept_in, plot_out, performance_desc_in, video_mode_drp, scripted_total_dur, scripted_shot_count, pm_state,
+    t2_inputs = [current_proj_var, min_silence_sl, silence_thresh_sl, shot_mode_drp, min_shot_dur, max_shot_dur, rough_concept_in, plot_out, performance_desc_in, video_mode_drp, scripted_total_dur, scripted_shot_count, pm_state,
                  singer_gender_in, ffp_style_dropdown, ffp_director_dropdown]
 
-    def auto_save_tab2(proj_name, min_sil, sil_thresh, mode, min_d, max_d, llm, concept, plot, performance_d, video_mode, s_total_dur, s_shot_count, pm,
+    def auto_save_tab2(proj_name, min_sil, sil_thresh, mode, min_d, max_d, concept, plot, performance_d, video_mode, s_total_dur, s_shot_count, pm,
                        singer_gender, ffp_style, ffp_director):
         if proj_name:
             pm.current_project = proj_name
             settings = {
                 "min_silence": min_sil, "silence_thresh": sil_thresh, "shot_mode": mode,
-                "min_dur": min_d, "max_dur": max_d, "llm_model": llm,
+                "min_dur": min_d, "max_dur": max_d,
                 "rough_concept": concept, "plot": plot,
                 "performance_desc": performance_d,
                 "video_mode": video_mode,
@@ -131,7 +159,7 @@ def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
             }
             pm.save_project_settings(settings)
 
-    for tab2_comp in [min_silence_sl, silence_thresh_sl, shot_mode_drp, min_shot_dur, max_shot_dur, llm_dropdown, video_mode_drp, scripted_total_dur, scripted_shot_count,
+    for tab2_comp in [min_silence_sl, silence_thresh_sl, shot_mode_drp, min_shot_dur, max_shot_dur, video_mode_drp, scripted_total_dur, scripted_shot_count,
                       ffp_style_dropdown, ffp_director_dropdown]:
         tab2_comp.change(auto_save_tab2, inputs=t2_inputs)
 
@@ -220,33 +248,134 @@ def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
 
     scan_btn.click(run_scan, inputs=[vocals_up, current_proj_var, min_silence_sl, silence_thresh_sl, shot_mode_drp, min_shot_dur, max_shot_dur, video_mode_drp, scripted_total_dur, scripted_shot_count, pm_state], outputs=[scan_status, shot_table])
 
-    refresh_llm_btn.click(lambda: gr.update(choices=LLMBridge().get_models()), outputs=llm_dropdown)
-
     stop_concepts_btn.click(stop_gen, inputs=[pm_state], outputs=[concept_gen_status])
 
-    def save_bible_edits(new_df, pm):
-        if pm.current_project and new_df is not None:
-            try:
-                bibles = {}
-                for _, row in new_df.iterrows():
-                    name = str(row.get("character_name", "")).strip()
-                    desc = str(row.get("description", "")).strip()
-                    if name and name.lower() != "nan":
-                        bibles[name] = desc
-                pm.character_bibles = bibles
-                pm.save_character_bibles()
-                pm.update_characters_column()
-                pm.save_data()
-            except Exception as e:
-                print(f"Error saving bible edits: {e}")
+    def _add_bible_character(value):
+        if isinstance(value, pd.DataFrame):
+            frame = value.copy()
+        elif isinstance(value, list):
+            frame = pd.DataFrame(value, columns=["character_name", "description"])
+        else:
+            frame = pd.DataFrame(columns=["character_name", "description"])
+        for column in ("character_name", "description"):
+            if column not in frame.columns:
+                frame[column] = ""
+        frame = pd.concat(
+            [frame[["character_name", "description"]], pd.DataFrame([{
+                "character_name": "", "description": "",
+            }])],
+            ignore_index=True,
+        )
+        return frame, "✏️ Blank character added. Enter a name and description, then click Save Changes."
 
-    bible_table.change(save_bible_edits, inputs=[bible_table, pm_state])
+    add_bible_character_btn.click(
+        _add_bible_character,
+        inputs=[bible_table],
+        outputs=[bible_table, bible_status],
+    )
+
+    def _save_bible_changes(value, current_reference, pm):
+        if not pm or not pm.current_project:
+            refs = h3_reference_ui_updates(pm)
+            empty = pd.DataFrame(columns=["character_name", "description"])
+            shots = pd.DataFrame(columns=config.REQUIRED_COLUMNS)
+            return ("❌ Load a project before saving character bibles.", empty, shots) + refs
+
+        old_bibles = dict(pm.character_bibles)
+        old_references = {name for name in old_bibles if any(h3_reference_paths(pm, name))}
+        try:
+            bible_df = pm.replace_character_bibles(value)
+        except Exception as exc:
+            current_df = value if isinstance(value, pd.DataFrame) else pd.DataFrame(
+                value or [], columns=["character_name", "description"]
+            )
+            return (f"❌ {exc}", current_df, pm.df) + h3_reference_ui_updates(pm, current_reference)
+
+        names = list(pm.character_bibles)
+        settings = pm.load_project_settings()
+        if settings.get("h3_lead_character") and settings["h3_lead_character"] not in names:
+            pm.save_project_settings({"h3_lead_character": ""})
+        old_keys = {name.casefold() for name in old_bibles}
+        added = [name for name in names if name.casefold() not in old_keys]
+        preferred = added[-1] if added else current_reference
+        stale = [
+            name for name in names
+            if name in old_references and old_bibles.get(name) != pm.character_bibles.get(name)
+        ]
+        status = f"✅ Saved {len(names)} character bible entr{'y' if len(names) == 1 else 'ies'}."
+        if stale:
+            status += f" Regenerate stale H3 references for: {', '.join(stale)}."
+        return (status, bible_df, pm.df) + h3_reference_ui_updates(pm, preferred)
+
+    save_bible_changes_btn.click(
+        _save_bible_changes,
+        inputs=[bible_table, h3_reference_character, pm_state],
+        outputs=[
+            bible_status, bible_table, shot_table,
+            h3_lead_character, h3_reference_character, h3_face_preview, h3_body_preview,
+            h3_reference_gallery,
+        ],
+    )
+
+    def _save_h3_lead(name, pm):
+        if pm and pm.current_project:
+            pm.save_project_settings({"h3_lead_character": name or ""})
+
+    h3_lead_character.change(_save_h3_lead, inputs=[h3_lead_character, pm_state])
+
+    def _show_h3_reference(name, pm):
+        face, body = h3_reference_paths(pm, name) if name else (None, None)
+        return face, body
+
+    h3_reference_character.change(
+        _show_h3_reference,
+        inputs=[h3_reference_character, pm_state],
+        outputs=[h3_face_preview, h3_body_preview],
+    )
+
+    def _generate_h3_references(name, pm):
+        try:
+            names = [name] if name else []
+            completed = generate_h3_character_references(pm, names)
+            face, body = h3_reference_paths(pm, name) if name else (None, None)
+            return f"✅ Generated H3 references for: {', '.join(completed)}", face, body, get_h3_reference_gallery(pm)
+        except Exception as exc:
+            return f"❌ {exc}", None, None, get_h3_reference_gallery(pm) if pm and pm.current_project else []
+
+    def _generate_all_h3_references(pm):
+        try:
+            completed = generate_h3_character_references(pm)
+            return f"✅ Generated H3 references for: {', '.join(completed)}", get_h3_reference_gallery(pm)
+        except Exception as exc:
+            return f"❌ {exc}", get_h3_reference_gallery(pm) if pm and pm.current_project else []
+
+    h3_generate_character_btn.click(
+        _generate_h3_references,
+        inputs=[h3_reference_character, pm_state],
+        outputs=[h3_reference_status, h3_face_preview, h3_body_preview, h3_reference_gallery],
+    )
+    h3_generate_all_btn.click(
+        _generate_all_h3_references,
+        inputs=[pm_state],
+        outputs=[h3_reference_status, h3_reference_gallery],
+    )
 
     export_csv_btn.click(lambda pm: pm.export_csv(), inputs=[pm_state], outputs=csv_downloader)
     import_csv_btn.upload(lambda f, pm: pm.import_csv(f), inputs=[import_csv_btn, pm_state], outputs=[import_status, shot_table]).then(lambda: gr.update(value=None), outputs=[import_csv_btn])
     download_story_btn.click(generate_story_file, inputs=[pm_state], outputs=[story_downloader])
     export_bibles_btn.click(lambda pm: pm.export_character_bibles(), inputs=[pm_state], outputs=bibles_downloader)
-    import_bibles_btn.upload(lambda f, pm: pm.import_character_bibles(f), inputs=[import_bibles_btn, pm_state], outputs=[import_bibles_status, bible_table]).then(lambda: gr.update(value=None), outputs=[import_bibles_btn])
+    import_bibles_btn.upload(
+        lambda f, pm: pm.import_character_bibles(f),
+        inputs=[import_bibles_btn, pm_state],
+        outputs=[import_bibles_status, bible_table],
+    ).then(
+        lambda pm: (pm.df,) + h3_reference_ui_updates(pm),
+        inputs=[pm_state],
+        outputs=[
+            shot_table, h3_lead_character, h3_reference_character, h3_face_preview,
+            h3_body_preview, h3_reference_gallery,
+        ],
+    ).then(lambda: gr.update(value=None), outputs=[import_bibles_btn])
 
     def save_manual_df_edits(new_df, pm):
         if pm.current_project:
@@ -260,12 +389,19 @@ def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
 
     shot_table.change(save_manual_df_edits, inputs=[shot_table, pm_state])
 
-    tab2_ui.select(lambda pm: pm.df, inputs=[pm_state], outputs=[shot_table])
+    def refresh_tab2(pm):
+        refs = h3_reference_ui_updates(pm)
+        return (pm.df,) + refs
+
+    tab2_ui.select(
+        refresh_tab2,
+        inputs=[pm_state],
+        outputs=[shot_table, h3_lead_character, h3_reference_character, h3_face_preview, h3_body_preview, h3_reference_gallery],
+    )
 
     return {
         "tab2_ui": tab2_ui,
         "shot_table": shot_table,
-        "llm_dropdown": llm_dropdown,
         "video_mode_drp": video_mode_drp,
         # All fields needed as handle_load outputs
         "min_silence_sl": min_silence_sl,
@@ -292,6 +428,11 @@ def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
         "bible_status": bible_status,
         "ffp_style_dropdown": ffp_style_dropdown,
         "ffp_director_dropdown": ffp_director_dropdown,
+        "h3_lead_character": h3_lead_character,
+        "h3_reference_character": h3_reference_character,
+        "h3_face_preview": h3_face_preview,
+        "h3_body_preview": h3_body_preview,
+        "h3_reference_gallery": h3_reference_gallery,
     }
 
 
@@ -308,11 +449,16 @@ def wire_template_events(t2, t5, pm_state, vocals_up, lyrics_in):
     bible_status = t2["bible_status"]
     bible_table = t2["bible_table"]
     shot_table = t2["shot_table"]
+    h3_lead_character = t2["h3_lead_character"]
+    h3_reference_character = t2["h3_reference_character"]
+    h3_face_preview = t2["h3_face_preview"]
+    h3_body_preview = t2["h3_body_preview"]
+    h3_reference_gallery = t2["h3_reference_gallery"]
     rough_concept_in = t2["rough_concept_in"]
     plot_out = t2["plot_out"]
     performance_desc_in = t2["performance_desc_in"]
     singer_gender_in = t2["singer_gender_in"]
-    llm_dropdown = t2["llm_dropdown"]
+    llm_dropdown = t5["llm_model_dropdown"]
     video_mode_drp = t2["video_mode_drp"]
     ffp_style_dropdown = t2["ffp_style_dropdown"]
     ffp_director_dropdown = t2["ffp_director_dropdown"]
@@ -354,6 +500,10 @@ def wire_template_events(t2, t5, pm_state, vocals_up, lyrics_in):
         generate_character_bibles_logic,
         inputs=[pm_state, llm_dropdown, video_mode_drp, bible_sys_prompt_in, bible_user_template_in],
         outputs=[bible_status, bible_table, shot_table]
+    ).then(
+        h3_reference_ui_updates,
+        inputs=[pm_state],
+        outputs=[h3_lead_character, h3_reference_character, h3_face_preview, h3_body_preview, h3_reference_gallery],
     )
     gen_firstframe_prompts_btn.click(
         lambda: gr.update(visible=True),
@@ -367,4 +517,8 @@ def wire_template_events(t2, t5, pm_state, vocals_up, lyrics_in):
         generate_character_bibles_logic,
         inputs=[pm_state, llm_dropdown, video_mode_drp, bible_sys_prompt_in, bible_user_template_in],
         outputs=[bible_status, bible_table, shot_table]
+    ).then(
+        h3_reference_ui_updates,
+        inputs=[pm_state],
+        outputs=[h3_lead_character, h3_reference_character, h3_face_preview, h3_body_preview, h3_reference_gallery],
     )

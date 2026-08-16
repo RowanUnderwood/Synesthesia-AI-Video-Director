@@ -27,6 +27,8 @@ _CONFIG_TEMPLATE = {
     "ltx_desktop_path": "H:\\LTX Desktop\\LTX Desktop.exe",
     "ltx_desktop_port": None,
     "stability_matrix_path": "",
+    "comfy_image_launcher_path": "run_comfy_image.bat",
+    "comfy_video_launcher_path": "run_comfy_video.bat",
     "git_branch": "main",
 }
 
@@ -40,6 +42,8 @@ _CONFIG_COMMENTS = """\
 //                        process name to decide whether LTX is already running.
 //                        e.g. 4000 for LTX-2 Cinematic Workstation. null = use process name.
 // stability_matrix_path: full path to StabilityMatrix.exe (or leave blank to skip)
+// comfy_image_launcher_path: image ComfyUI batch file (port 8188 / RTX 4090)
+// comfy_video_launcher_path: MiniMax H3 ComfyUI batch file (port 8189 / RTX 5090)
 // git_branch           : "main" = stable release tags  |  "dev" = latest dev commits
 //                        (only used by run.bat / launcher without --dev flag)
 //
@@ -102,7 +106,13 @@ def load_config() -> dict:
     raw = CONFIG_FILE.read_text(encoding="utf-8")
     json_lines = [ln for ln in raw.splitlines() if not ln.strip().startswith("//")]
     try:
-        return json.loads("\n".join(json_lines))
+        config = json.loads("\n".join(json_lines))
+        # Existing installs predate the two-process ComfyUI arrangement.  These
+        # project-local defaults make the new launch method work without asking
+        # users to hand-edit their config first.
+        config.setdefault("comfy_image_launcher_path", str(PROJECT_DIR / "run_comfy_image.bat"))
+        config.setdefault("comfy_video_launcher_path", str(PROJECT_DIR / "run_comfy_video.bat"))
+        return config
     except json.JSONDecodeError as exc:
         print(f"ERROR: Could not parse launcher_config.json: {exc}")
         print(f"  Fix the file and try again: {CONFIG_FILE}")
@@ -363,7 +373,13 @@ def main() -> None:
         cfg.get("ltx_desktop_path", ""),
         port=cfg.get("ltx_desktop_port"),
     )
-    launch_if_not_running("StabilityMatrix.exe", cfg.get("stability_matrix_path", ""))
+    image_launcher = cfg.get("comfy_image_launcher_path", "")
+    video_launcher = cfg.get("comfy_video_launcher_path", "")
+    launch_if_not_running("cmd.exe", image_launcher, port=8188)
+    launch_if_not_running("cmd.exe", video_launcher, port=8189)
+    # Retain the old launcher only for a deliberately configured legacy setup.
+    if not image_launcher and not video_launcher:
+        launch_if_not_running("StabilityMatrix.exe", cfg.get("stability_matrix_path", ""))
 
     result = subprocess.run([str(VENV_PYTHON), "app.py"])
     if result.returncode != 0:

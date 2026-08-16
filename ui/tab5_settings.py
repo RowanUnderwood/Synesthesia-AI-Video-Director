@@ -7,10 +7,11 @@ _DEFAULT_URLS = {
     "LTX Desktop":            "http://127.0.0.1:8000/api",
     "Wan2GP":                 "http://127.0.0.1:7862/api",
     "LTX2.3-Multifunctional": "http://127.0.0.1:3000/api",
+    "MiniMax H3":            "http://127.0.0.1:8189",
 }
 
 
-def build(pm_state, llm_dropdown):
+def build(pm_state):
     """Build Tab 5: Settings."""
 
     with gr.Tab("5. Settings"):
@@ -18,7 +19,7 @@ def build(pm_state, llm_dropdown):
         gr.Markdown("These settings apply globally across all projects and are saved immediately on click.")
         with gr.Row():
             video_backend_drp = gr.Dropdown(
-                choices=["LTX Desktop", "Wan2GP", "LTX2.3-Multifunctional"],
+                choices=["LTX Desktop", "Wan2GP", "LTX2.3-Multifunctional", "MiniMax H3"],
                 value=config.VIDEO_BACKEND,
                 label="Video Generation Backend",
             )
@@ -34,15 +35,21 @@ def build(pm_state, llm_dropdown):
                 info="Set to match LTX_AUTH_TOKEN in your LTX Desktop fork. Leave blank for stock LTX Desktop.",
             )
             lm_url_in = gr.Textbox(
-                label="LLM API URL (LM Studio / llama.cpp)",
+                label="LM Studio API URL",
                 value=config.LM_STUDIO_URL,
-                placeholder="http://127.0.0.1:1234/v1",
+                placeholder="http://127.0.0.1:1234 or http://127.0.0.1:1234/v1",
             )
             comfyui_url_in = gr.Textbox(
-                label="ComfyUI API URL",
+                label="Image ComfyUI API URL",
                 value=config.COMFYUI_URL,
                 placeholder="http://127.0.0.1:8188",
-                info="Base URL for ComfyUI. Used when Z-Image Backend is set to ComfyUI in Tab 3.",
+                info="RTX 4090 instance used by Z-Image and Krea 2.",
+            )
+            h3_comfyui_url_in = gr.Textbox(
+                label="MiniMax H3 ComfyUI API URL",
+                value=config.H3_COMFYUI_URL,
+                placeholder="http://127.0.0.1:8189",
+                info="RTX 5090 instance used by all MiniMax H3 video workflows.",
             )
             electricity_cost_in = gr.Number(
                 label="Electricity Cost ($/kWh)",
@@ -60,6 +67,24 @@ def build(pm_state, llm_dropdown):
                 step=10,
                 info="Full system draw during video generation. Default: 600W (RTX 5090 system)",
             )
+        with gr.Row():
+            lm_token_in = gr.Textbox(
+                label="LM Studio API Token",
+                value=config.LM_STUDIO_API_TOKEN,
+                type="password",
+                placeholder="Bearer token from LM Studio Developer settings",
+                info="Stored locally in global_settings.json and sent only to the configured LM Studio server.",
+                scale=3,
+            )
+            llm_model_dropdown = gr.Dropdown(
+                choices=[config.LM_STUDIO_MODEL] if config.LM_STUDIO_MODEL else [],
+                value=config.LM_STUDIO_MODEL or None,
+                label="Default Vision LLM Model",
+                interactive=True,
+                allow_custom_value=True,
+                scale=4,
+            )
+            refresh_llm_models_btn = gr.Button("🔄 Refresh Vision Models", scale=2)
         _gpu_choices = config.get_gpu_list()
         _gpu_default_idx = config.GPU_MONITOR_INDEX
         _gpu_default = next((c for c in _gpu_choices if c.startswith(str(_gpu_default_idx))), _gpu_choices[0])
@@ -255,24 +280,46 @@ LTX2.3-Multifunctional's own settings if needed.
         outputs=[video_backend_drp, video_api_url_in, wan2gp_accordion, ltx23_accordion, backend_switch_status],
     )
 
-    def handle_save_settings(video_url, ltx_auth_token, lm_url, comfyui_url, backend, electricity_cost, system_wattage, gpu_monitor):
+    def handle_save_settings(video_url, ltx_auth_token, lm_url, lm_token, llm_model,
+                             comfyui_url, h3_comfyui_url, backend, electricity_cost,
+                             system_wattage, gpu_monitor):
         settings = {
             "ltx_base_url": video_url,
             "ltx_auth_token": ltx_auth_token,
             "lm_studio_url": lm_url,
+            "lm_studio_api_token": lm_token,
+            "lm_studio_model": llm_model,
             "comfyui_url": comfyui_url,
+            "h3_comfyui_url": h3_comfyui_url,
             "video_backend": backend,
             "electricity_cost": electricity_cost,
             "system_wattage": system_wattage,
             "gpu_monitor_index": gpu_monitor,
         }
-        status = config.save_global_url_settings(settings)
-        return status, gr.update(choices=LLMBridge().get_models())
+        return config.save_global_url_settings(settings)
 
     save_settings_btn.click(
         handle_save_settings,
-        inputs=[video_api_url_in, ltx_auth_token_in, lm_url_in, comfyui_url_in, video_backend_drp, electricity_cost_in, system_wattage_in, gpu_monitor_drp],
-        outputs=[settings_status, llm_dropdown],
+        inputs=[video_api_url_in, ltx_auth_token_in, lm_url_in, lm_token_in, llm_model_dropdown,
+                comfyui_url_in, h3_comfyui_url_in, video_backend_drp, electricity_cost_in,
+                system_wattage_in, gpu_monitor_drp],
+        outputs=[settings_status],
+    )
+
+    def refresh_llm_models(lm_url, lm_token, current_model):
+        try:
+            models = LLMBridge(lm_url, lm_token).get_models(vision_only=True)
+            if not models:
+                return gr.update(choices=[], value=None), "⚠️ LM Studio returned no vision-capable LLMs."
+            selected = current_model if current_model in models else models[0]
+            return gr.update(choices=models, value=selected), f"✅ Found {len(models)} vision-capable LM Studio model(s)."
+        except Exception as exc:
+            return gr.update(), f"❌ LM Studio model refresh failed: {exc}"
+
+    refresh_llm_models_btn.click(
+        refresh_llm_models,
+        inputs=[lm_url_in, lm_token_in, llm_model_dropdown],
+        outputs=[llm_model_dropdown, settings_status],
     )
 
     calibration_reset_btn.click(
@@ -359,6 +406,7 @@ LTX2.3-Multifunctional's own settings if needed.
 
     return {
         "video_backend_drp": video_backend_drp,
+        "llm_model_dropdown": llm_model_dropdown,
         "plot_sys_prompt_in": plot_sys_prompt_in,
         "plot_user_template_in": plot_user_template_in,
         "plot_sys_prompt_scripted_in": plot_sys_prompt_scripted_in,

@@ -1,0 +1,612 @@
+{
+  "2568": {
+    "inputs": {
+      "frame_rate": [
+        "1512:1669",
+        0
+      ],
+      "codec": "Auto",
+      "container": "Auto",
+      "bit_depth": "Auto",
+      "quality": 20,
+      "log_level": "Standard",
+      "pingpong": false,
+      "save_metadata": true,
+      "filename_prefix": "video/%date:yyyy-MM-dd%/%date:hhmmss%",
+      "save_output": true,
+      "pass_frames": false,
+      "crop_to_audio": true,
+      "audio_codec": true,
+      "audio_bitrate": "192k",
+      "save_first_frame": false,
+      "save_last_frame": false,
+      "images": [
+        "1512:2528",
+        0
+      ],
+      "audio": [
+        "1512:2675",
+        0
+      ]
+    },
+    "class_type": "DaSiWa_EnhancedVideoCombine",
+    "_meta": {
+      "title": "DaSiWa Enhanced Video Combine"
+    }
+  },
+  "2678": {
+    "inputs": {
+      "stack_data": "[{\"on\":true,\"lora\":\"minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors\",\"str\":1,\"vs\":1,\"as\":1},{\"on\":true,\"lora\":\"None\",\"str\":1,\"vs\":1,\"as\":1},{\"on\":true,\"lora\":\"None\",\"str\":1,\"vs\":1,\"as\":1},{\"on\":true,\"lora\":\"None\",\"str\":1,\"vs\":1,\"as\":1},{\"on\":true,\"lora\":\"None\",\"str\":1,\"vs\":1,\"as\":1},{\"on\":true,\"lora\":\"None\",\"str\":1,\"vs\":1,\"as\":1},{\"on\":true,\"lora\":\"None\",\"str\":1,\"vs\":1,\"as\":1}]",
+      "model_type": "Basic",
+      "model": [
+        "2693",
+        5
+      ],
+      "clip": [
+        "1512:2587",
+        0
+      ]
+    },
+    "class_type": "DaSiWa_LTX2LoraLoader",
+    "_meta": {
+      "title": "DaSiWa Advanced LoRA Loader"
+    }
+  },
+  "2693": {
+    "inputs": {
+      "mode": "REF2VA",
+      "prompt": "A Dragon attacks.",
+      "width": [
+        "1512:2531",
+        0
+      ],
+      "height": [
+        "1512:2531",
+        1
+      ],
+      "duration": 5,
+      "ref_image_size": "match",
+      "timeline_data": "{\"version\":1,\"items\":[{\"id\":\"image-1786827525530-0\",\"enabled\":true,\"order\":0,\"slot\":0,\"start\":0,\"duration\":1,\"type\":\"image\",\"value\":\"20260813_124132 1.jpg\"},{\"id\":\"image-1786827525617-1\",\"enabled\":true,\"order\":1,\"slot\":1,\"start\":1,\"duration\":1,\"type\":\"image\",\"value\":\"20260813_124021 1.jpg\"},{\"id\":\"image-1786827525719-2\",\"enabled\":true,\"order\":2,\"slot\":2,\"start\":2,\"duration\":1,\"type\":\"image\",\"value\":\"20260813_103159 1.jpg\"},{\"id\":\"image-1786827525770-3\",\"enabled\":true,\"order\":3,\"slot\":3,\"start\":3,\"duration\":1,\"type\":\"image\",\"value\":\"20260813_103148 1.jpg\"},{\"id\":\"image-1786827525781-4\",\"enabled\":true,\"order\":4,\"slot\":4,\"start\":4,\"duration\":1,\"type\":\"image\",\"value\":\"748.jpg\"},{\"id\":\"image-1786827525834-5\",\"enabled\":true,\"order\":5,\"slot\":5,\"start\":5,\"duration\":1,\"type\":\"image\",\"value\":\"746.jpg\"},{\"id\":\"image-1786827525892-6\",\"enabled\":true,\"order\":6,\"slot\":6,\"start\":6,\"duration\":1,\"type\":\"image\",\"value\":\"20260812_143101.jpg\"},{\"id\":\"image-1786827525909-7\",\"enabled\":true,\"order\":7,\"slot\":7,\"start\":7,\"duration\":1,\"type\":\"image\",\"value\":\"20260812_142924.jpg\"},{\"id\":\"image-1786827526079-8\",\"enabled\":true,\"order\":8,\"slot\":8,\"start\":8,\"duration\":1,\"type\":\"image\",\"value\":\"20260812_143204.jpg\"}],\"prompt_blocks\":[],\"builder_state\":{\"version\":1,\"mode\":\"REF2VA\",\"duration\":5,\"ref\":{\"subject_definitions\":\"\",\"summary\":\"\",\"retention_analysis\":\"\",\"detailed_description\":\"\",\"soundscape\":\"\",\"music\":\"N/A\",\"subject_defs\":[],\"summary_types\":[\"reference generation\"],\"summary_text\":\"\",\"retention\":[],\"style_line\":\"\",\"detail\":\"\"},\"imd\":\"\",\"soundscape\":\"\",\"music\":\"N/A\"}}",
+      "fl2va_model": [
+        "1512:1536",
+        0
+      ],
+      "ref2va_model": [
+        "1512:2663",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3Director",
+    "_meta": {
+      "title": "MiniMax H3 Director"
+    }
+  },
+  "1512:2528": {
+    "inputs": {
+      "denoise": true,
+      "denoise_quality": "Ultra",
+      "deblur": true,
+      "deblur_quality": "Ultra",
+      "upscale": "VSR",
+      "upscale_quality": "Ultra",
+      "resize_type": "Scale",
+      "scale": 2,
+      "megapixels": 2,
+      "width": 1920,
+      "height": 1080,
+      "divisible_by": "32",
+      "ratio_preset": "16:9",
+      "resize_method": "Center Crop (Fill)",
+      "device_id": 0,
+      "images": [
+        "1512:2677",
+        0
+      ]
+    },
+    "class_type": "DaSiWa_RTX_UpscalerRefiner",
+    "_meta": {
+      "title": "DaSiWa RTX Upscaler & Refiner"
+    }
+  },
+  "1512:2591": {
+    "inputs": {
+      "noise": [
+        "1512:2600",
+        0
+      ],
+      "guider": [
+        "1512:2592",
+        0
+      ],
+      "sampler": [
+        "1512:2598",
+        0
+      ],
+      "sigmas": [
+        "1512:2590",
+        0
+      ],
+      "latent_image": [
+        "1512:2701",
+        1
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "1512:2586": {
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "1512:2588": {
+    "inputs": {
+      "unet_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "1512:2669": {
+    "inputs": {
+      "samples": [
+        "1512:2668",
+        0
+      ],
+      "vae": [
+        "1512:2585",
+        0
+      ]
+    },
+    "class_type": "VAEDecodeAudio",
+    "_meta": {
+      "title": "VAE Decode Audio"
+    }
+  },
+  "1512:2587": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_int4_convrot.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "1512:2668": {
+    "inputs": {
+      "noise": [
+        "1512:2600",
+        0
+      ],
+      "guider": [
+        "1512:2667",
+        0
+      ],
+      "sampler": [
+        "1512:2598",
+        0
+      ],
+      "sigmas": [
+        "1512:2679",
+        0
+      ],
+      "latent_image": [
+        "1512:2700",
+        1
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "1512:2598": {
+    "inputs": {
+      "sampler_name": "res_multistep"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "KSamplerSelect"
+    }
+  },
+  "1512:2671": {
+    "inputs": {
+      "samples": [
+        "1512:2668",
+        0
+      ],
+      "vae": [
+        "1512:2584",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "1512:2590": {
+    "inputs": {
+      "scheduler": "simple",
+      "steps": 4,
+      "denoise": 1,
+      "model": [
+        "2678",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "BasicScheduler"
+    }
+  },
+  "1512:2679": {
+    "inputs": {
+      "scheduler": "simple",
+      "steps": 4,
+      "denoise": 1,
+      "model": [
+        "2678",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "BasicScheduler"
+    }
+  },
+  "1512:2663": {
+    "inputs": {
+      "enable_fp16_accumulation": true,
+      "model": [
+        "1512:2664",
+        0
+      ]
+    },
+    "class_type": "ModelPatchTorchSettings",
+    "_meta": {
+      "title": "Model Patch Torch Settings"
+    }
+  },
+  "1512:2630": {
+    "inputs": {
+      "samples": [
+        "1512:2591",
+        0
+      ],
+      "vae": [
+        "1512:2584",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "1512:2631": {
+    "inputs": {
+      "samples": [
+        "1512:2591",
+        0
+      ],
+      "vae": [
+        "1512:2585",
+        0
+      ]
+    },
+    "class_type": "VAEDecodeAudio",
+    "_meta": {
+      "title": "VAE Decode Audio"
+    }
+  },
+  "1512:2675": {
+    "inputs": {
+      "switch": [
+        "2693",
+        6
+      ],
+      "on_false": [
+        "1512:2669",
+        0
+      ],
+      "on_true": [
+        "1512:2631",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch"
+    }
+  },
+  "1512:2584": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE Video"
+    }
+  },
+  "1512:2585": {
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE Audio"
+    }
+  },
+  "1512:2683": {
+    "inputs": {
+      "reuse_threshold": 0.3,
+      "start_percent": 0.2,
+      "end_percent": 0.9,
+      "verbose": false,
+      "model": [
+        "1512:2588",
+        0
+      ]
+    },
+    "class_type": "EasyCache",
+    "_meta": {
+      "title": "EasyCache"
+    }
+  },
+  "1512:2681": {
+    "inputs": {
+      "reuse_threshold": 0.3,
+      "start_percent": 0.2,
+      "end_percent": 0.9,
+      "verbose": false,
+      "model": [
+        "1512:2586",
+        0
+      ]
+    },
+    "class_type": "EasyCache",
+    "_meta": {
+      "title": "EasyCache"
+    }
+  },
+  "1512:1536": {
+    "inputs": {
+      "enable_fp16_accumulation": true,
+      "model": [
+        "1512:2650",
+        0
+      ]
+    },
+    "class_type": "ModelPatchTorchSettings",
+    "_meta": {
+      "title": "Model Patch Torch Settings"
+    }
+  },
+  "1512:2650": {
+    "inputs": {
+      "sage_attention": "sageattn_qk_int8_pv_fp8_cuda++",
+      "allow_compile": false,
+      "model": [
+        "1512:2685",
+        0
+      ]
+    },
+    "class_type": "PathchSageAttentionKJ",
+    "_meta": {
+      "title": "Patch Sage Attention KJ"
+    }
+  },
+  "1512:2664": {
+    "inputs": {
+      "sage_attention": "sageattn_qk_int8_pv_fp8_cuda++",
+      "allow_compile": false,
+      "model": [
+        "1512:2686",
+        0
+      ]
+    },
+    "class_type": "PathchSageAttentionKJ",
+    "_meta": {
+      "title": "Patch Sage Attention KJ"
+    }
+  },
+  "1512:2686": {
+    "inputs": {
+      "model": [
+        "1512:2683",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
+    "_meta": {
+      "title": "MiniMax H3 Mem Eff Sage Attention Patch"
+    }
+  },
+  "1512:2667": {
+    "inputs": {
+      "model": [
+        "1512:2691",
+        0
+      ],
+      "conditioning": [
+        "1512:2700",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "Basic Guider"
+    }
+  },
+  "1512:2592": {
+    "inputs": {
+      "model": [
+        "1512:2692",
+        0
+      ],
+      "conditioning": [
+        "1512:2701",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "Basic Guider"
+    }
+  },
+  "1512:2692": {
+    "inputs": {
+      "shift_video": 10,
+      "shift_audio": 5,
+      "model": [
+        "2678",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3SigmaShift",
+    "_meta": {
+      "title": "ModelSamplingMiniMaxH3"
+    }
+  },
+  "1512:2691": {
+    "inputs": {
+      "shift_video": 10,
+      "shift_audio": 5,
+      "model": [
+        "2678",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3SigmaShift",
+    "_meta": {
+      "title": "ModelSamplingMiniMaxH3"
+    }
+  },
+  "1512:2700": {
+    "inputs": {
+      "clip": [
+        "1512:2587",
+        0
+      ],
+      "vae": [
+        "1512:2584",
+        0
+      ],
+      "guide": [
+        "2693",
+        0
+      ],
+      "audio_vae": [
+        "1512:2585",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3DirectorGuide",
+    "_meta": {
+      "title": "MiniMax H3 Director Guide"
+    }
+  },
+  "1512:2701": {
+    "inputs": {
+      "clip": [
+        "2678",
+        1
+      ],
+      "vae": [
+        "1512:2584",
+        0
+      ],
+      "guide": [
+        "2693",
+        0
+      ],
+      "audio_vae": [
+        "1512:2585",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3DirectorGuide",
+    "_meta": {
+      "title": "MiniMax H3 Director Guide"
+    }
+  },
+  "1512:2685": {
+    "inputs": {
+      "model": [
+        "1512:2681",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
+    "_meta": {
+      "title": "MiniMax H3 Mem Eff Sage Attention Patch"
+    }
+  },
+  "1512:2600": {
+    "inputs": {
+      "noise_seed": 402157020315395
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "RandomNoise"
+    }
+  },
+  "1512:2531": {
+    "inputs": {
+      "resolution_preset": "0.65 MP - Balanced",
+      "no_scale": false,
+      "scale_from_image": false,
+      "aspect_preset_when_not_image": "3:4 - Photo",
+      "swap_aspect_when_not_image": false,
+      "custom_aspect_width": 16,
+      "custom_aspect_height": 9,
+      "mode": "WAN/LTX (Div32)",
+      "custom_divisor": 8
+    },
+    "class_type": "DaSiWa_ResolutionScaleCalculator",
+    "_meta": {
+      "title": "DaSiWa Resolution Scale Calculator"
+    }
+  },
+  "1512:2677": {
+    "inputs": {
+      "switch": [
+        "2693",
+        6
+      ],
+      "on_false": [
+        "1512:2671",
+        0
+      ],
+      "on_true": [
+        "1512:2630",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "If/Else Switch"
+    }
+  },
+  "1512:1669": {
+    "inputs": {
+      "value": 24
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "FPS"
+    }
+  }
+}

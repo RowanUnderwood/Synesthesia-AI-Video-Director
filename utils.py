@@ -63,6 +63,18 @@ def get_ltx_duration(seconds, fps=24):
     frames = get_ltx_frame_count(seconds, fps)
     return frames / fps
 
+def get_h3_render_frame_count(timeline_frames):
+    """Return H3's 17n+5 render length for a timeline frame count.
+
+    Extra frames are render-only padding.  The project's 24-FPS timeline and
+    final assembly remain anchored to the original frame count.
+    """
+    frames = max(5, int(timeline_frames))
+    frames += (5 - frames) % 17
+    if frames > 362:
+        raise ValueError("MiniMax H3 supports at most 362 frames (15.083 seconds at 24 FPS).")
+    return frames
+
 def format_time(seconds):
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)

@@ -6,7 +6,7 @@ import pandas as pd
 from pydub import AudioSegment, silence
 
 import config
-from utils import get_ltx_duration
+from utils import get_ltx_duration, snap_to_frame
 
 # ==========================================
 # LOGIC: TIMELINE & CONCEPTS
@@ -17,6 +17,16 @@ def get_existing_projects():
     if not os.path.exists(base_dir): return []
     projects = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
     return sorted(projects)
+
+def _backend_max_duration():
+    return 15 if config.VIDEO_BACKEND == "MiniMax H3" else 10
+
+def _timeline_duration(seconds, fps=24.0):
+    """Keep H3 project timing on the exact 24-FPS timeline grid.
+
+    Its 17n+5 render expansion is applied only immediately before generation.
+    """
+    return snap_to_frame(seconds, fps) if config.VIDEO_BACKEND == "MiniMax H3" else get_ltx_duration(seconds, fps)
 
 def scan_vocals_advanced(vocals_file_path, project_name, min_silence, silence_thresh, shot_mode, min_dur, max_dur, pm):
     if not project_name or not vocals_file_path or not os.path.exists(vocals_file_path): return pd.DataFrame()
@@ -35,7 +45,7 @@ def scan_vocals_advanced(vocals_file_path, project_name, min_silence, silence_th
     shot_counter = 1
     fps = 24.0
 
-    MIN_LTX_DUR = get_ltx_duration(1.0, fps)
+    MIN_LTX_DUR = _timeline_duration(1.0, fps)
 
     def create_row(sType, start, end, current_count):
         dur = end - start
@@ -70,9 +80,9 @@ def scan_vocals_advanced(vocals_file_path, project_name, min_silence, silence_th
             chosen_int = int(math.ceil(chosen_raw))
 
             if chosen_int > max_safe_int: chosen_int = max_safe_int
-            if chosen_int > 10: chosen_int = 10
+            if chosen_int > _backend_max_duration(): chosen_int = _backend_max_duration()
 
-            actual_dur = get_ltx_duration(chosen_int, fps)
+            actual_dur = _timeline_duration(chosen_int, fps)
 
             if actual_dur > gap:
                 break
@@ -90,9 +100,9 @@ def scan_vocals_advanced(vocals_file_path, project_name, min_silence, silence_th
             else:
                 chosen_int = int(math.ceil(vocal_req_dur))
                 if chosen_int < 1: chosen_int = 1
-            if chosen_int > 10: chosen_int = 10
+            if chosen_int > _backend_max_duration(): chosen_int = _backend_max_duration()
 
-            actual_dur = get_ltx_duration(chosen_int, fps)
+            actual_dur = _timeline_duration(chosen_int, fps)
 
             new_rows.append(create_row("Vocal", current_cursor, current_cursor + actual_dur, shot_counter))
             shot_counter += 1
@@ -108,9 +118,9 @@ def scan_vocals_advanced(vocals_file_path, project_name, min_silence, silence_th
         chosen_int = int(math.ceil(chosen_raw))
 
         if chosen_int > max_safe_int: chosen_int = max_safe_int
-        if chosen_int > 10: chosen_int = 10
+        if chosen_int > _backend_max_duration(): chosen_int = _backend_max_duration()
 
-        actual_dur = get_ltx_duration(chosen_int, fps)
+        actual_dur = _timeline_duration(chosen_int, fps)
         if actual_dur > remaining_time: break
 
         new_rows.append(create_row("Action", current_cursor, current_cursor + actual_dur, shot_counter))
@@ -119,8 +129,10 @@ def scan_vocals_advanced(vocals_file_path, project_name, min_silence, silence_th
         remaining_time = total_duration - current_cursor
 
     if remaining_time > 0.1:
-        chosen_int = max(1, min(int(math.ceil(remaining_time)), 10))
-        actual_dur = get_ltx_duration(chosen_int, fps)
+        chosen_int = max(1, min(int(math.ceil(remaining_time)), _backend_max_duration()))
+        actual_dur = (snap_to_frame(remaining_time, fps)
+                      if config.VIDEO_BACKEND == "MiniMax H3"
+                      else _timeline_duration(chosen_int, fps))
         new_rows.append(create_row("Action", current_cursor, current_cursor + actual_dur, shot_counter))
 
     new_df = pd.DataFrame(new_rows)
@@ -137,7 +149,7 @@ def build_simple_timeline(total_duration, shot_type, shot_mode, min_dur, max_dur
     current_cursor = 0.0
     shot_counter = 1
     fps = 24.0
-    MIN_LTX_DUR = get_ltx_duration(1.0, fps)
+    MIN_LTX_DUR = _timeline_duration(1.0, fps)
 
     def create_row(sType, start, end, current_count):
         dur = end - start
@@ -167,10 +179,10 @@ def build_simple_timeline(total_duration, shot_type, shot_mode, min_dur, max_dur
 
         if chosen_int > max_safe_int:
             chosen_int = max_safe_int
-        if chosen_int > 10:
-            chosen_int = 10
+        if chosen_int > _backend_max_duration():
+            chosen_int = _backend_max_duration()
 
-        actual_dur = get_ltx_duration(chosen_int, fps)
+        actual_dur = _timeline_duration(chosen_int, fps)
         if actual_dur > remaining_time:
             break
 
@@ -181,8 +193,10 @@ def build_simple_timeline(total_duration, shot_type, shot_mode, min_dur, max_dur
 
     # Handle remaining time
     if remaining_time > 0.1:
-        chosen_int = max(1, min(int(math.ceil(remaining_time)), 10))
-        actual_dur = get_ltx_duration(chosen_int, fps)
+        chosen_int = max(1, min(int(math.ceil(remaining_time)), _backend_max_duration()))
+        actual_dur = (snap_to_frame(remaining_time, fps)
+                      if config.VIDEO_BACKEND == "MiniMax H3"
+                      else _timeline_duration(chosen_int, fps))
         new_rows.append(create_row(shot_type, current_cursor, current_cursor + actual_dur, shot_counter))
 
     new_df = pd.DataFrame(new_rows)

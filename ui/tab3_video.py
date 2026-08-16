@@ -14,6 +14,7 @@ from video import (get_project_videos, delete_video_file, generate_video_for_sho
                    get_video_count_for_shot, apply_character_bibles, resolve_style_data,
                    convert_prompt_for_zimage, generate_comfyui_zimage_first_frame,
                    _will_use_chain_conditioning, _has_valid_cached_first_frame)
+from h3 import H3_ASPECT_PRESETS, H3_QUALITY_PRESETS, h3_aspect_cache_key
 
 
 def build(pm_state, current_proj_var, shared_shot_state):
@@ -22,19 +23,23 @@ def build(pm_state, current_proj_var, shared_shot_state):
     with gr.Tab("3. Video Generation") as tab3_ui:
         selected_vid_path = gr.State("")
         gallery_paths_state = gr.State([])
+        backend_state = gr.State(config.VIDEO_BACKEND)
 
         with gr.Row():
             vid_gen_mode_dropdown = gr.Dropdown(choices=["Generate Remaining Shots", "Regenerate all Shots", "Generate all Action Shots", "Generate all Vocal Shots", "Generate Remaining Action Shots", "Generate Remaining Vocal Shots"], value="Generate Remaining Shots", label="Generation Mode")
             vid_versions_dropdown = gr.Dropdown(choices=[1, 2, 3, 4, 5], value=1, label="Versions per Shot")
             vid_resolution_dropdown = gr.Dropdown(choices=["540p", "720p", "1080p"], value="1080p", label="Resolution")
             vid_firstframe_mode = gr.Radio(
-                choices=["LTX-Native", "Z-Image First Frame"],
-                value="LTX-Native",
+                choices=(["Krea 2 First Frame", "Z-Image First Frame"]
+                         if config.VIDEO_BACKEND == "MiniMax H3"
+                         else ["LTX-Native", "Z-Image First Frame"]),
+                value=("Krea 2 First Frame" if config.VIDEO_BACKEND == "MiniMax H3" else "LTX-Native"),
                 label="First Frame Mode"
             )
             vid_zimage_backend = gr.Dropdown(
-                choices=["LTX Desktop", "ComfyUI", "ComfyUI-run-ahead"],
-                value="LTX Desktop",
+                choices=(["ComfyUI"] if config.VIDEO_BACKEND == "MiniMax H3"
+                         else ["LTX Desktop", "ComfyUI", "ComfyUI-run-ahead"]),
+                value=("ComfyUI" if config.VIDEO_BACKEND == "MiniMax H3" else "LTX Desktop"),
                 label="Z-Image Backend",
                 visible=False,
                 info="LTX Desktop: use LTX's built-in Z-Image. ComfyUI: generate via ComfyUI sequentially. ComfyUI-run-ahead: generate next shot's frame on ComfyUI in parallel while LTX renders current shot (dual-GPU).",
@@ -55,6 +60,19 @@ def build(pm_state, current_proj_var, shared_shot_state):
             )
             vid_lora_refresh_btn = gr.Button("🔄", scale=1, min_width=50)
 
+        with gr.Row(visible=(config.VIDEO_BACKEND == "MiniMax H3")) as h3_row:
+            h3_aspect_dropdown = gr.Dropdown(
+                choices=H3_ASPECT_PRESETS, value="3:4 - Photo", label="H3 Aspect Ratio"
+            )
+            h3_quality_dropdown = gr.Dropdown(
+                choices=H3_QUALITY_PRESETS, value="0.65 MP - Balanced", label="H3 Quality"
+            )
+            h3_lipsync_output_dropdown = gr.Dropdown(
+                choices=["RTX Upscaled", "Native"], value="RTX Upscaled", label="H3 Lip-Sync Output"
+            )
+            h3_custom_width = gr.Number(value=16, precision=0, minimum=1, label="H3 Custom Aspect Width", visible=False)
+            h3_custom_height = gr.Number(value=9, precision=0, minimum=1, label="H3 Custom Aspect Height", visible=False)
+
         with gr.Row():
             vid_style_dropdown = gr.Dropdown(choices=config.STYLE_NAMES, value="None", label="Style")
             vid_director_dropdown = gr.Dropdown(choices=config.DIRECTORS, value="None", label="Directed by")
@@ -66,9 +84,9 @@ def build(pm_state, current_proj_var, shared_shot_state):
         llm_image_prompt_dropdown = gr.Dropdown(
             choices=["Use video prompt as-is", "Convert with LLM"],
             value="Use video prompt as-is",
-            label="Z-Image Prompt Mode",
+            label="First Frame Prompt Mode",
             visible=False,
-            info="When 'Convert with LLM' is selected, the video prompt is rewritten as a still-image first-frame prompt before Z-image generation. The result is cached to the CSV for reuse. (JIT: next shot's prompt pre-converted while current video renders.)"
+            info="When 'Convert with LLM' is selected, the video prompt is rewritten as a still-image first-frame prompt before Krea or Z-Image generation. The result is cached to the CSV for reuse."
         )
         first_frame_reuse_dropdown = gr.Dropdown(
             choices=["Use cached prompt", "Use cached image", "Regenerate both on each render"],
@@ -215,10 +233,10 @@ def build(pm_state, current_proj_var, shared_shot_state):
         if row_idx and "First_Frame_Prompt" in pm.df.columns:
             pm.df.at[row_idx[0], 'First_Frame_Prompt'] = new_prompt
             # Prompt changed — clear any cached first frame image so a fresh one is generated
-            if "First_Frame_Image_Path" in pm.df.columns:
-                pm.df.at[row_idx[0], 'First_Frame_Image_Path'] = ""
-            if "First_Frame_Image_Source" in pm.df.columns:
-                pm.df.at[row_idx[0], 'First_Frame_Image_Source'] = ""
+            for column in ("First_Frame_Image_Path", "First_Frame_Image_Source",
+                           "First_Frame_Image_Aspect", "First_Frame_Image_Prompt_Hash"):
+                if column in pm.df.columns:
+                    pm.df.at[row_idx[0], column] = ""
             pm.save_data()
 
     first_frame_prompt_edit.change(save_first_frame_prompt, inputs=[single_shot_dropdown, first_frame_prompt_edit, pm_state])
@@ -251,8 +269,10 @@ def build(pm_state, current_proj_var, shared_shot_state):
         if "First_Frame_Image_Path" in pm.df.columns and pm.df.at[row_idx[0], 'First_Frame_Image_Path']:
             pm.df.at[row_idx[0], 'First_Frame_Image_Path'] = ""
             changed = True
-        if "First_Frame_Image_Source" in pm.df.columns:
-            pm.df.at[row_idx[0], 'First_Frame_Image_Source'] = ""
+        for column in ("First_Frame_Image_Source", "First_Frame_Image_Aspect",
+                       "First_Frame_Image_Prompt_Hash"):
+            if column in pm.df.columns:
+                pm.df.at[row_idx[0], column] = ""
         if changed:
             pm.save_data()
             gr.Info(f"Cached first frame image cleared for {shot_id}. A fresh image will be generated on next render.")
@@ -262,17 +282,17 @@ def build(pm_state, current_proj_var, shared_shot_state):
 
     single_shot_dropdown.change(get_first_frame_img_status, inputs=[single_shot_dropdown, pm_state], outputs=[first_frame_img_status])
 
-    def toggle_zimage_controls(mode):
-        is_zimage = (mode == "Z-Image First Frame")
-        # When switching off Z-Image, hide all controls and clear status
-        # When switching on, restore visibility but let shot-change handler refresh status
-        return (gr.update(visible=is_zimage), gr.update(visible=is_zimage),
-                gr.update(visible=is_zimage), gr.update(visible=False) if not is_zimage else gr.update(),
-                gr.update(visible=is_zimage))
+    def toggle_firstframe_controls(mode, backend):
+        uses_generated_frame = mode in ("Krea 2 First Frame", "Z-Image First Frame")
+        show_zimage_backend = mode == "Z-Image First Frame" and backend != "MiniMax H3"
+        return (gr.update(visible=uses_generated_frame), gr.update(visible=uses_generated_frame),
+                gr.update(visible=uses_generated_frame),
+                gr.update(visible=False) if not uses_generated_frame else gr.update(),
+                gr.update(visible=show_zimage_backend))
 
     vid_firstframe_mode.change(
-        toggle_zimage_controls,
-        inputs=[vid_firstframe_mode],
+        toggle_firstframe_controls,
+        inputs=[vid_firstframe_mode, backend_state],
         outputs=[llm_image_prompt_dropdown, first_frame_prompt_row, first_frame_reuse_dropdown, first_frame_img_status, vid_zimage_backend]
     )
 
@@ -551,6 +571,39 @@ def build(pm_state, current_proj_var, shared_shot_state):
                      vid_resolution_dropdown, single_shot_camera_dropdown,
                      vid_director_dropdown, vid_style_dropdown, vid_vocal_chain_checkbox, vid_lora_dropdown]:
         _t3_comp.change(auto_save_tab3_prefs, inputs=_tab3_pref_inputs)
+
+    def save_h3_preferences(aspect, quality, lipsync_output, custom_width, custom_height, pm):
+        if pm and pm.current_project:
+            pm.save_project_settings({
+                "h3_aspect": aspect,
+                "h3_quality": quality,
+                "h3_lipsync_output": lipsync_output,
+                "h3_custom_width": custom_width,
+                "h3_custom_height": custom_height,
+            })
+            expected_aspect = h3_aspect_cache_key(aspect, custom_width, custom_height)
+            if "First_Frame_Image_Aspect" in pm.df.columns:
+                invalid = pm.df["First_Frame_Image_Path"].astype(str).str.strip().ne("") & (
+                    pm.df["First_Frame_Image_Aspect"].astype(str) != expected_aspect
+                )
+                if invalid.any():
+                    for column in ("First_Frame_Image_Path", "First_Frame_Image_Source",
+                                   "First_Frame_Image_Aspect", "First_Frame_Image_Prompt_Hash"):
+                        if column in pm.df.columns:
+                            pm.df.loc[invalid, column] = ""
+                    pm.save_data()
+
+    for _h3_comp in [h3_aspect_dropdown, h3_quality_dropdown, h3_lipsync_output_dropdown, h3_custom_width, h3_custom_height]:
+        _h3_comp.change(
+            save_h3_preferences,
+            inputs=[h3_aspect_dropdown, h3_quality_dropdown, h3_lipsync_output_dropdown, h3_custom_width, h3_custom_height, pm_state],
+        )
+
+    h3_aspect_dropdown.change(
+        lambda aspect: (gr.update(visible=(aspect == "CUSTOM")), gr.update(visible=(aspect == "CUSTOM"))),
+        inputs=[h3_aspect_dropdown],
+        outputs=[h3_custom_width, h3_custom_height],
+    )
 
     # --- Gallery select ---
 
@@ -1206,7 +1259,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
         pm.llm_busy = True
         try:
             settings = pm.load_project_settings()
-            llm_model = settings.get("llm_model", "qwen3-vl-8b-instruct-abliterated-v2.0")
+            llm_model = config.LM_STUDIO_MODEL
             plot = settings.get("plot", "")
             prompt_template = settings.get("prompt_template", config.DEFAULT_CONCEPT_PROMPT)
             performance_desc = settings.get("performance_desc", "")
@@ -1247,10 +1300,10 @@ def build(pm_state, current_proj_var, shared_shot_state):
             # Clear stale first-frame caches since the video prompt changed
             if "First_Frame_Prompt" in pm.df.columns:
                 pm.df.at[index, 'First_Frame_Prompt'] = ""
-            if "First_Frame_Image_Path" in pm.df.columns:
-                pm.df.at[index, 'First_Frame_Image_Path'] = ""
-            if "First_Frame_Image_Source" in pm.df.columns:
-                pm.df.at[index, 'First_Frame_Image_Source'] = ""
+            for column in ("First_Frame_Image_Path", "First_Frame_Image_Source",
+                           "First_Frame_Image_Aspect", "First_Frame_Image_Prompt_Hash"):
+                if column in pm.df.columns:
+                    pm.df.at[index, column] = ""
             # Clear override — new LLM prompt replaces the old assembled version
             if 'Prompt_Override' in pm.df.columns:
                 pm.df.at[index, 'Prompt_Override'] = ''
@@ -1260,7 +1313,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
 
             # If Z-Image + LLM conversion active: regenerate first-frame prompt now so it's visible in the UI
             new_ffp = ""
-            if generation_mode == "Z-Image First Frame" and use_llm_img:
+            if generation_mode in ("Krea 2 First Frame", "Z-Image First Frame") and use_llm_img:
                 gal = get_project_videos(pm, proj)
                 yield gal, f"🧠 Regenerating first-frame image prompt...", [item[0] for item in gal], 0, 0, "", "", "", "", gr.update(), gr.update(), gr.update()
                 if row['Type'] == 'Vocal' and vocal_mode == "Use Singer/Band Description":
@@ -1368,10 +1421,10 @@ def build(pm_state, current_proj_var, shared_shot_state):
             if "First_Frame_Prompt" in pm.df.columns:
                 pm.df.at[row_idx[0], "First_Frame_Prompt"] = new_ffp
             # Clear cached first frame image — new prompt means a new image should be generated
-            if "First_Frame_Image_Path" in pm.df.columns:
-                pm.df.at[row_idx[0], "First_Frame_Image_Path"] = ""
-            if "First_Frame_Image_Source" in pm.df.columns:
-                pm.df.at[row_idx[0], "First_Frame_Image_Source"] = ""
+            for column in ("First_Frame_Image_Path", "First_Frame_Image_Source",
+                           "First_Frame_Image_Aspect", "First_Frame_Image_Prompt_Hash"):
+                if column in pm.df.columns:
+                    pm.df.at[row_idx[0], column] = ""
             pm.save_data()
             gr.Info(f"First-frame prompt regenerated for {shot_id}.")
             return new_ffp
@@ -1392,6 +1445,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
 
     return {
         "tab3_ui": tab3_ui,
+        "backend_state": backend_state,
         "vid_resolution_dropdown": vid_resolution_dropdown,
         "single_shot_dropdown": single_shot_dropdown,
         "single_shot_type_radio": single_shot_type_radio,
@@ -1411,6 +1465,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
         "llm_image_prompt_dropdown": llm_image_prompt_dropdown,
         "first_frame_reuse_dropdown": first_frame_reuse_dropdown,
         "first_frame_prompt_row": first_frame_prompt_row,
+        "first_frame_img_status": first_frame_img_status,
         "vid_vocal_prompt_mode": vid_vocal_prompt_mode,
         "vid_gen_mode_dropdown": vid_gen_mode_dropdown,
         "vid_versions_dropdown": vid_versions_dropdown,
@@ -1419,6 +1474,12 @@ def build(pm_state, current_proj_var, shared_shot_state):
         "vid_style_dropdown": vid_style_dropdown,
         "vid_lora_dropdown": vid_lora_dropdown,
         "lora_row": lora_row,
+        "h3_row": h3_row,
+        "h3_aspect_dropdown": h3_aspect_dropdown,
+        "h3_quality_dropdown": h3_quality_dropdown,
+        "h3_lipsync_output_dropdown": h3_lipsync_output_dropdown,
+        "h3_custom_width": h3_custom_width,
+        "h3_custom_height": h3_custom_height,
         "override_status": override_status,
         "clear_override_btn": clear_override_btn,
     }

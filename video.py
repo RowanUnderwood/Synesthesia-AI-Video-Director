@@ -73,7 +73,7 @@ def convert_prompt_for_zimage(base_prompt, pm, settings=None):
     if settings is None:
         settings = pm.load_project_settings()
     template = settings.get("zimage_prompt_template", config.DEFAULT_ZIMAGE_PROMPT_CONVERSION_TEMPLATE)
-    llm_model = settings.get("llm_model", "qwen3-vl-8b-instruct-abliterated-v2.0")
+    llm_model = config.LM_STUDIO_MODEL
     llm = LLMBridge()
     user_msg = template.replace("{prompt}", base_prompt)
     return llm.query(config.ZIMAGE_PROMPT_SYSTEM_PROMPT, user_msg, llm_model)
@@ -153,7 +153,9 @@ def get_project_videos(pm, project_name=None):
     vid_dir = os.path.join(pm.base_dir, proj, "videos")
     if not os.path.exists(vid_dir): return []
 
-    files = glob.glob(os.path.join(vid_dir, "*.mp4"))
+    files = []
+    for extension in ("*.mp4", "*.webm", "*.mov", "*.mkv"):
+        files.extend(glob.glob(os.path.join(vid_dir, extension)))
 
     def sort_key(filepath):
         fname = os.path.basename(filepath)
@@ -315,7 +317,7 @@ def generate_zimage_first_frame(prompt, shot_id, pm):
     yield (local_path, None)
 
 
-def generate_comfyui_zimage_first_frame(prompt, shot_id, pm):
+def generate_comfyui_zimage_first_frame(prompt, shot_id, pm, width=None, height=None):
     """Generate a Z-Image first frame via ComfyUI using ZImage_Poster_API.json.
     Same generator interface as generate_zimage_first_frame: yields progress strings,
     final yield is (local_path, None) on success or (None, error_msg) on failure."""
@@ -337,8 +339,8 @@ def generate_comfyui_zimage_first_frame(prompt, shot_id, pm):
     # Substitute parameters
     workflow["6"]["inputs"]["text"] = str(prompt)
     workflow["57"]["inputs"]["seed"] = random.randint(1, 10 ** 15)
-    workflow["61"]["inputs"]["width"] = config.Z_IMAGE_WIDTH
-    workflow["61"]["inputs"]["height"] = config.Z_IMAGE_HEIGHT
+    workflow["61"]["inputs"]["width"] = int(width or config.Z_IMAGE_WIDTH)
+    workflow["61"]["inputs"]["height"] = int(height or config.Z_IMAGE_HEIGHT)
     workflow["73"]["inputs"]["filename_prefix"] = f"synesthesia_{shot_id}"
 
     # Submit to ComfyUI
@@ -607,6 +609,16 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
     if style_data:
         print(f"🎨 Style: {style}")
     print(f"🎬 Video Prompt:\n{vid_prompt}\n=================================\n")
+
+    if config.VIDEO_BACKEND == "MiniMax H3":
+        from h3 import generate_h3_video_for_shot
+        yield from generate_h3_video_for_shot(
+            shot_id, row, row_idx[0], pm, vid_prompt,
+            generation_mode=generation_mode,
+            caching_mode=caching_mode,
+            use_llm_image_prompt=use_llm_image_prompt,
+        )
+        return
 
     payload = {
         "prompt": vid_prompt,
@@ -976,4 +988,3 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
         pm.df.at[row_idx[0], 'Status'] = 'Error'
         pm.save_data()
         yield None, "Error: Completed but no valid video path returned."
-

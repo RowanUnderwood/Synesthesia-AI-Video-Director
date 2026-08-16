@@ -297,7 +297,7 @@ def generate_all_firstframe_prompts_logic(pm, llm_model, zimage_template, style=
 
     settings = pm.load_project_settings()
     if not llm_model:
-        llm_model = settings.get("llm_model", "qwen3-vl-8b-instruct-abliterated-v2.0")
+        llm_model = config.LM_STUDIO_MODEL
     if not zimage_template or not zimage_template.strip():
         zimage_template = settings.get("zimage_prompt_template", config.DEFAULT_ZIMAGE_PROMPT_CONVERSION_TEMPLATE)
 

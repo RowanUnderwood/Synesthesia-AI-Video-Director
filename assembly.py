@@ -108,7 +108,12 @@ def assemble_video(full_song_path, resolution, pm, fallback_mode=False, style_fi
         vid_path = pick_vid_path(row)
         dur = float(row['Duration'])
         start_time = float(row['Start_Time'])
-        snapped_dur = round(dur * 24) / 24
+        # The timeline's frame count is authoritative. H3 grid-padding frames
+        # are deliberately rendered but never allowed to lengthen assembly.
+        try:
+            snapped_dur = int(row.get('Total_Frames')) / 24
+        except (TypeError, ValueError):
+            snapped_dur = round(dur * 24) / 24
         clip = None
 
         gap = round((start_time - expected_cursor) * 24) / 24
@@ -271,7 +276,10 @@ def assemble_video_with_shot_numbers(full_song_path, resolution, pm, style_filte
         vid_path = pick_vid_path(row)
         dur = float(row['Duration'])
         start_time = float(row['Start_Time'])
-        snapped_dur = round(dur * 24) / 24
+        try:
+            snapped_dur = int(row.get('Total_Frames')) / 24
+        except (TypeError, ValueError):
+            snapped_dur = round(dur * 24) / 24
         clip = None
 
         gap = round((start_time - expected_cursor) * 24) / 24

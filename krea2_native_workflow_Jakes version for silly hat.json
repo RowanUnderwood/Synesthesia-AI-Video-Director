@@ -1,0 +1,168 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "krea2_turbo_fp8.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNET Loader - Krea2 Turbo FP8"
+    }
+  },
+  "2": {
+    "inputs": {
+      "seed": 41275697616623,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "er_sde",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "18",
+        0
+      ],
+      "positive": [
+        "16",
+        0
+      ],
+      "negative": [
+        "8",
+        0
+      ],
+      "latent_image": [
+        "15",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "3": {
+    "inputs": {
+      "samples": [
+        "2",
+        0
+      ],
+      "vae": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "4": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "VAE Loader"
+    }
+  },
+  "5": {
+    "inputs": {
+      "images": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "6": {
+    "inputs": {
+      "text": "A high-contrast, cinematic composition centered on a female protagonist with a serious, focused gaze, her face partially obscured by a complex, biomechanical cybernetic mask. The mask is predominantly white and glossy pink, with a single, large, realistic human eye visible, framed by intricate gold-toned mechanical gears and joints. A single, vibrant pink cherry blossom with detailed stamens is affixed to the side of the mask, contrasting with the cold metal. Her dark hair flows around the mask, partially revealing her human features. She wears a dark blue, matte-finished tactical headset with a red accent and a metallic gold clasp. A red and white koi fish, rendered with realistic scales and flowing fins, swims dynamically through the composition, positioned near her neck. In the background, a secondary male figure with white hair, wearing a dark tactical suit, is partially visible, framed by a red circular element, suggesting a reflection or a portal. The entire scene is set against a dark, deep teal and black background, filled with abstract, glowing pink vertical lines and streaks of light that resemble digital data streams or neon signage. The lighting is dramatic, with strong highlights on the glossy surfaces of the mask and the koi fish, casting deep shadows that enhance the three-dimensional form and the cyberpunk aesthetic. The color palette is dominated by intense pinks, deep teals, and metallic golds, creating a visually arresting contrast. The overall texture is a blend of hyper-realistic skin and fabric, glossy plastic and metal, and stylized, painterly digital elements.",
+      "clip": [
+        "18",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Positive Prompt"
+    }
+  },
+  "8": {
+    "inputs": {
+      "conditioning": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "Negative (Zero Out)"
+    }
+  },
+  "13": {
+    "inputs": {
+      "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+      "type": "krea2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "CLIP Loader - Krea2"
+    }
+  },
+  "15": {
+    "inputs": {
+      "aspect": "16:9",
+      "direction": "landscape",
+      "shortside": 1024,
+      "batch_size": 1
+    },
+    "class_type": "Empty Latent by Ratio (WLSH)",
+    "_meta": {
+      "title": "Empty Latent by Ratio (WLSH)"
+    }
+  },
+  "16": {
+    "inputs": {
+      "preset": "balanced",
+      "per_layer_weights": "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0",
+      "multiplier": 1,
+      "renormalize": true,
+      "conditioning": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "ConditioningKrea2Rebalance",
+    "_meta": {
+      "title": "🎛️ Krea 2 Conditioning Control"
+    }
+  },
+  "18": {
+    "inputs": {
+      "PowerLoraLoaderHeaderWidget": {
+        "type": "PowerLoraLoaderHeaderWidget"
+      },
+      "lora_1": {
+        "on": true,
+        "lora": "KNPV3_1.safetensors",
+        "strength": 1
+      },
+      "➕ Add Lora": "",
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "13",
+        0
+      ]
+    },
+    "class_type": "Power Lora Loader (rgthree)",
+    "_meta": {
+      "title": "Power Lora Loader (rgthree)"
+    }
+  }
+}

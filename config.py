@@ -9,8 +9,11 @@ import glob
 LTX_BASE_URL = "http://127.0.0.1:8000/api"
 LTX_AUTH_TOKEN: str = ""  # Bearer token for LTX Desktop auth; empty = no auth (vanilla LTX)
 LM_STUDIO_URL = "http://127.0.0.1:1234/v1"
-VIDEO_BACKEND = "LTX Desktop"  # "LTX Desktop" | "Wan2GP" | "LTX2.3-Multifunctional"
-COMFYUI_URL = "http://127.0.0.1:8188"  # Base URL for ComfyUI (Z-Image backend only)
+LM_STUDIO_API_TOKEN: str = ""
+LM_STUDIO_MODEL = "qwen3-vl-8b-instruct-abliterated-v2.0"
+VIDEO_BACKEND = "LTX Desktop"  # "LTX Desktop" | "Wan2GP" | "LTX2.3-Multifunctional" | "MiniMax H3"
+COMFYUI_URL = "http://127.0.0.1:8188"  # Image ComfyUI: Z-Image and Krea 2 (RTX 4090)
+H3_COMFYUI_URL = "http://127.0.0.1:8189"  # MiniMax H3 video ComfyUI (RTX 5090)
 ELECTRICITY_COST = 0.1805  # USD per kWh (default 18.05¢)
 SYSTEM_WATTAGE = 600.0     # Watts, full system draw during generation (default: RTX 5090 system)
 GPU_MONITOR_INDEX = 0      # pynvml device index to monitor for VRAM usage
@@ -189,7 +192,9 @@ REQUIRED_COLUMNS = [
     "Shot_ID", "Type",
     "Start_Time", "End_Time", "Duration",
     "Start_Frame", "End_Frame", "Total_Frames",
-    "Lyrics", "Video_Prompt", "First_Frame_Prompt", "First_Frame_Image_Path", "First_Frame_Image_Source", "Prompt_Override", "Prompt_Override_Text", "Characters", "Video_Path", "All_Video_Paths", "Status",
+    "Lyrics", "Video_Prompt", "First_Frame_Prompt", "First_Frame_Image_Path", "First_Frame_Image_Source",
+    "First_Frame_Image_Aspect", "First_Frame_Image_Prompt_Hash",
+    "Prompt_Override", "Prompt_Override_Text", "Characters", "Video_Path", "All_Video_Paths", "Status",
     "Render_Resolution",
 ]
 
@@ -471,7 +476,8 @@ GLOBALIZABLE_KEYS = frozenset({
     "firstframe_mode", "llm_image_prompt_mode", "first_frame_reuse_mode",
     "vocal_prompt_mode", "vocal_chain_mode", "last_resolution", "last_versions",
     "last_camera_motion", "last_director", "last_style",
-    "zimage_backend", "last_lora",
+    "zimage_backend", "last_lora", "h3_aspect", "h3_quality", "h3_lipsync_output",
+    "h3_custom_width", "h3_custom_height",
 })
 
 _CODE_DEFAULTS = {
@@ -508,6 +514,11 @@ _CODE_DEFAULTS = {
     "last_style": "None",
     "zimage_backend": "LTX Desktop",
     "last_lora": "None",
+    "h3_aspect": "3:4 - Photo",
+    "h3_quality": "0.65 MP - Balanced",
+    "h3_lipsync_output": "RTX Upscaled",
+    "h3_custom_width": 16,
+    "h3_custom_height": 9,
 }
 
 # ==========================================
@@ -516,28 +527,16 @@ _CODE_DEFAULTS = {
 GLOBAL_SETTINGS_FILE = "global_settings.json"
 
 def get_global_llm():
-    try:
-        if os.path.exists(GLOBAL_SETTINGS_FILE):
-            with open(GLOBAL_SETTINGS_FILE, "r") as f:
-                return json.load(f).get("last_llm", None)
-    except:
-        pass
-    return None
+    """Compatibility accessor for older callers and settings files."""
+    return LM_STUDIO_MODEL
+
 
 def save_global_llm(model_id):
-    try:
-        data = {}
-        if os.path.exists(GLOBAL_SETTINGS_FILE):
-            with open(GLOBAL_SETTINGS_FILE, "r") as f:
-                data = json.load(f)
-        data["last_llm"] = model_id
-        with open(GLOBAL_SETTINGS_FILE, "w") as f:
-            json.dump(data, f, indent=4)
-    except:
-        pass
+    """Compatibility helper. New UI code saves the model with all global settings."""
+    return save_global_url_settings({"lm_studio_model": model_id})
 
 def load_global_url_settings():
-    global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, VIDEO_BACKEND, COMFYUI_URL, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
+    global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, LM_STUDIO_API_TOKEN, LM_STUDIO_MODEL, VIDEO_BACKEND, COMFYUI_URL, H3_COMFYUI_URL, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
     try:
         if os.path.exists(GLOBAL_SETTINGS_FILE):
             with open(GLOBAL_SETTINGS_FILE, "r") as f:
@@ -545,8 +544,11 @@ def load_global_url_settings():
                 LTX_BASE_URL = data.get("ltx_base_url", LTX_BASE_URL)
                 LTX_AUTH_TOKEN = data.get("ltx_auth_token", LTX_AUTH_TOKEN)
                 LM_STUDIO_URL = data.get("lm_studio_url", LM_STUDIO_URL)
+                LM_STUDIO_API_TOKEN = data.get("lm_studio_api_token", LM_STUDIO_API_TOKEN)
+                LM_STUDIO_MODEL = data.get("lm_studio_model", data.get("last_llm", LM_STUDIO_MODEL))
                 VIDEO_BACKEND = data.get("video_backend", VIDEO_BACKEND)
                 COMFYUI_URL = data.get("comfyui_url", COMFYUI_URL)
+                H3_COMFYUI_URL = data.get("h3_comfyui_url", H3_COMFYUI_URL)
                 ELECTRICITY_COST = float(data.get("electricity_cost", ELECTRICITY_COST))
                 SYSTEM_WATTAGE = float(data.get("system_wattage", SYSTEM_WATTAGE))
                 GPU_MONITOR_INDEX = int(data.get("gpu_monitor_index", GPU_MONITOR_INDEX))
@@ -555,12 +557,15 @@ def load_global_url_settings():
 
 def save_global_url_settings(settings: dict):
     """Accept a settings dict and persist all global settings to disk."""
-    global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, VIDEO_BACKEND, COMFYUI_URL, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
+    global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, LM_STUDIO_API_TOKEN, LM_STUDIO_MODEL, VIDEO_BACKEND, COMFYUI_URL, H3_COMFYUI_URL, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
     LTX_BASE_URL = str(settings.get("ltx_base_url", LTX_BASE_URL)).strip()
     LTX_AUTH_TOKEN = str(settings.get("ltx_auth_token", LTX_AUTH_TOKEN)).strip()
     LM_STUDIO_URL = str(settings.get("lm_studio_url", LM_STUDIO_URL)).strip()
+    LM_STUDIO_API_TOKEN = str(settings.get("lm_studio_api_token", LM_STUDIO_API_TOKEN)).strip()
+    LM_STUDIO_MODEL = str(settings.get("lm_studio_model", LM_STUDIO_MODEL)).strip()
     VIDEO_BACKEND = settings.get("video_backend", VIDEO_BACKEND)
     COMFYUI_URL = str(settings.get("comfyui_url", COMFYUI_URL)).strip()
+    H3_COMFYUI_URL = str(settings.get("h3_comfyui_url", H3_COMFYUI_URL)).strip()
     ELECTRICITY_COST = float(settings.get("electricity_cost", ELECTRICITY_COST))
     SYSTEM_WATTAGE = float(settings.get("system_wattage", SYSTEM_WATTAGE))
     raw_gpu = settings.get("gpu_monitor_index", GPU_MONITOR_INDEX)
@@ -574,8 +579,13 @@ def save_global_url_settings(settings: dict):
             "ltx_base_url": LTX_BASE_URL,
             "ltx_auth_token": LTX_AUTH_TOKEN,
             "lm_studio_url": LM_STUDIO_URL,
+            "lm_studio_api_token": LM_STUDIO_API_TOKEN,
+            "lm_studio_model": LM_STUDIO_MODEL,
+            # Keep the legacy key synchronized for existing installations.
+            "last_llm": LM_STUDIO_MODEL,
             "video_backend": VIDEO_BACKEND,
             "comfyui_url": COMFYUI_URL,
+            "h3_comfyui_url": H3_COMFYUI_URL,
             "electricity_cost": ELECTRICITY_COST,
             "system_wattage": SYSTEM_WATTAGE,
             "gpu_monitor_index": GPU_MONITOR_INDEX,
@@ -603,6 +613,10 @@ def get_global_defaults() -> dict:
                     result[key] = data[key]
     except Exception:
         pass
+    if VIDEO_BACKEND == "MiniMax H3":
+        if result.get("firstframe_mode") not in ("Krea 2 First Frame", "Z-Image First Frame"):
+            result["firstframe_mode"] = "Krea 2 First Frame"
+        result["zimage_backend"] = "ComfyUI"
     return result
 
 
