@@ -25,6 +25,12 @@ Upload your **vocals audio** (an isolated vocal track — stems work best). The 
 
 Paste your **lyrics** in the text box. These are saved with the project and handed to the LLM when generating the overarching plot.
 
+After uploading isolated vocals and pasting ground-truth lyrics, click **Add Lyric Timestamps** to run CPU-only speech recognition and align local word groups back to the original lyric lines. It starts with Whisper `small`, retries with `medium.en` or multilingual `medium` when coverage is poor, and rejects lines with implausible duration or gaps. Confident matches receive `[MM:SS.mmm --> MM:SS.mmm]` prefixes; unmatched lines remain unchanged. Replacing the vocals or editing the lyrics makes the saved alignment stale until you scan again.
+
+When authoritative captions already exist, upload an **SBV, SRT, VTT, or LRC** file and click **Import Timed Captions**. Synesthesia matches caption text to the ground-truth lyric lines in order, so repeated choruses consume repeated caption cues correctly. Caption import avoids Whisper and is the preferred path when good timings are available.
+
+Click **Export Templates and Instructions for External LLM** after building the timeline and timestamping at least one lyric line. The downloaded ZIP contains `shot_list.csv`, `character_bibles.csv` (including a header-only template when no characters exist), and backend-aware instructions with the timestamped lyrics.
+
 ---
 
 ## Tab 2 · Storyboard
@@ -402,7 +408,7 @@ Return TWO files:
 
 2. A separate character_bibles.csv file with two columns: "character_name" and "description". Include one row per recurring character who appears in the action shots. Each description should be a single dense paragraph covering the character's age, gender, ethnicity, hair color and style, clothing, and any other distinguishing visual details — written so that an AI video model (LTX 2.3) can reproduce the character's appearance consistently across multiple unrelated shots. In the video prompt field for action shots, the characters name will automatically be followed by thier description from the character bible, so there is no need to describe the characters outside of their names.  Avoid using the same name more than once per video prompt.
 
-3. Do not include the lead singer in the character bibles; they are handled separately via the vocal shot type description.  
+3. Lead-singer handling depends on the selected backend. For **MiniMax H3**, include the lead singer in the character bibles because H3 generates face and full-body identity references from that entry. For LTX backends, the singer may remain in the separate vocal performance description.
 
 The AI video prompt for the vocal shots should always be very similar to the following as we cut to the live performance. We need to focus on consistency and always being closeup so the lip-sync model has enough pixels to work with.
 

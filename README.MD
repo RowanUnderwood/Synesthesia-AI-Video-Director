@@ -25,7 +25,7 @@ You will need two external applications running alongside this tool:
 
 You will also need the following installed on your system:
 
-- **[Python](https://www.python.org/downloads/)** — Version 3.8 or higher. During installation on Windows, make sure to check **"Add Python to PATH"**.
+- **[Python](https://www.python.org/downloads/)** — Version 3.10 or higher. During installation on Windows, make sure to check **"Add Python to PATH"**.
 - **[FFmpeg](https://ffmpeg.org/)** — Required by `pydub` for audio processing. Must be installed and available on your system PATH.
 - **[Git](https://git-scm.com/)** — Required for cloning the repository and receiving updates. Windows users can install [Git for Windows](https://git-scm.com/download/win).
 
@@ -112,6 +112,9 @@ For Windows users who prefer not to use the command line, a single launcher batc
 
 1. **Create a Project** (Tab 1) — Give your project a name and click *Create New Project*.
 2. **Upload Assets** (Tab 1) — Upload an isolated vocal track (for timeline scanning), optionally upload the full song (for final assembly), and paste your lyrics.
+   - **Add Lyric Timestamps** runs Whisper on CPU and locally aligns recognized words to your ground-truth lyric lines. It starts with `small`, rejects incoherent line spans, and retries with `medium.en`/`medium` when coverage is poor. First use of either model downloads it.
+   - If you already have timed captions, upload an **SBV, SRT, VTT, or LRC** file and click **Import Timed Captions**. Caption text is matched monotonically to the ground-truth lyrics, including repeated choruses.
+   - **Export Templates and Instructions for External LLM** creates a ZIP containing the current shot list, a Character Bible CSV (even when blank), and backend-aware directing instructions with timestamped lyrics.
 3. **Build the Timeline** (Tab 2) — Choose a mode, adjust silence detection settings, and click *Scan Vocals & Build Timeline*. The app splits your audio into Vocal and Action shots. Shot durations range from 1–10 seconds; shots over 5 seconds require 720p or lower and will auto-downgrade from 1080p.
 4. **Generate Prompts** (Tab 2) — Select your LLM model, write a rough concept, then generate the overarching plot and video prompts with the bulk generation button. Use **Character Bibles** (also on Tab 2) to define recurring characters with a consistent visual description — bibles are automatically injected into prompts at generation time so characters look the same across unrelated shots.
 5. **Generate Videos** (Tab 3) — Pick a generation mode, resolution, and optionally enable **Z-Image First Frame** mode for improved character consistency, or **Chain consecutive vocal shots** for seamless frame continuity between consecutive vocal shots (see Tab 6 help for details on both). Click *Start Batch Generation*. Your video backend will render each shot.
@@ -229,7 +232,7 @@ If you prefer not to run a local LLM, you can use a cloud-based model (such as C
 Create a music video via AI video prompts for the following song. See the attached shot list with durations and frame counts. We need to tell a coherent story using the shots labeled "action" in the type column. Return TWO files:
 
 1. The shot list CSV with each "Video_Prompt" field filled out.
-2. A separate character_bibles.csv file with two columns: "character_name" and "description". Include one row per recurring character who appears in the action shots. Each description should be a single dense paragraph covering the character's age, gender, ethnicity, hair colour and style, clothing, and any other distinguishing visual details — written so that an AI video model can reproduce the character's appearance consistently across multiple unrelated shots. Do not include the lead singer in the bibles; they are handled separately via the vocal shot description.
+2. A separate character_bibles.csv file with two columns: "character_name" and "description". Include one row per recurring character who appears in the action shots. Each description should be a single dense paragraph covering the character's age, gender, ethnicity, hair colour and style, clothing, and any other distinguishing visual details — written so that an AI video model can reproduce the character's appearance consistently across multiple unrelated shots. For MiniMax H3, include the lead singer so H3 can generate and reuse their character references. For LTX backends, the lead singer may instead be handled separately through the vocal shot description.
 
 The AI video prompt for the vocal shots should always be very similar to the following as we cut to the live performance. We need to focus on consistency and always being closeup so the lip-sync model has enough pixels to work with.
 

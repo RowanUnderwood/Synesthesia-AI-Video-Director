@@ -81,7 +81,7 @@ def build_app():
 
             _blank_update = gr.update()
             if "already exists" in msg or "Invalid" in msg:
-                return (msg,) + (_blank_update,) * 33
+                return (msg,) + (_blank_update,) * 37
 
             settings = pm.load_project_settings()
             df = pd.DataFrame(columns=config.REQUIRED_COLUMNS)
@@ -120,6 +120,7 @@ def build_app():
                 gr.update(value=settings.get("h3_custom_height", 9), visible=(settings.get("h3_aspect", "3:4 - Photo") == "CUSTOM")),
                 gr.update(choices=[], value=None),  # single_shot_dropdown — reset on new project
                 gr.update(value=None),              # single_shot_type_radio
+                None, "", "", None,  # caption file, lyric timing status, export status/file
             )
 
         t1["create_btn"].click(
@@ -138,7 +139,9 @@ def build_app():
                      t5["zimage_template_in"],
                      t3["h3_aspect_dropdown"], t3["h3_quality_dropdown"], t3["h3_lipsync_output_dropdown"],
                      t3["h3_custom_width"], t3["h3_custom_height"],
-                     t3["single_shot_dropdown"], t3["single_shot_type_radio"]]
+                     t3["single_shot_dropdown"], t3["single_shot_type_radio"],
+                     t1["timed_caption_file"], t1["lyric_timestamp_status"], t1["external_export_status"],
+                     t1["external_export_file"]]
         )
 
         def handle_load(name, pm):
@@ -247,6 +250,7 @@ def build_app():
                     value=None,
                 ),
                 gr.update(value=None),  # single_shot_type_radio
+                None, "", "", None,  # clear caption file and lyric/export status on load
             )
 
         t1["load_btn"].click(
@@ -286,6 +290,9 @@ def build_app():
                 t3["h3_custom_width"], t3["h3_custom_height"],
                 # Tab 3 shot selector
                 t3["single_shot_dropdown"], t3["single_shot_type_radio"],
+                # Tab 1 lyric timing / external export state
+                t1["timed_caption_file"], t1["lyric_timestamp_status"], t1["external_export_status"],
+                t1["external_export_file"],
             ]
         )
 

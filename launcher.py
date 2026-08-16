@@ -3,6 +3,7 @@ Synesthesia AI Video Director — Launcher
 stdlib only: runs with system Python before the venv exists.
 """
 
+import hashlib
 import json
 import os
 import socket
@@ -15,8 +16,9 @@ PROJECT_DIR  = Path(__file__).parent.resolve()
 os.chdir(PROJECT_DIR)
 
 VENV_PYTHON  = PROJECT_DIR / "venv" / "Scripts" / "python.exe"
-VENV_PIP     = PROJECT_DIR / "venv" / "Scripts" / "pip.exe"
 CONFIG_FILE  = PROJECT_DIR / "launcher_config.json"
+REQUIREMENTS_FILE = PROJECT_DIR / "requirements.txt"
+REQUIREMENTS_MARKER = PROJECT_DIR / "venv" / ".requirements.sha256"
 
 DEV_MODE          = "--dev" in sys.argv
 SYNESTHESIA_PORT  = 7860   # default Gradio port; change if you set server_port in app.py
@@ -136,20 +138,57 @@ def ensure_venv() -> None:
         print("ERROR: Failed to create virtual environment.")
         pause_exit(1)
 
-    print("Installing dependencies...")
-    result = _run(str(VENV_PIP), "install", "-r", "requirements.txt")
-    if result.returncode != 0:
-        print("ERROR: Failed to install dependencies.")
-        pause_exit(1)
-
     print()
     print("=" * 60)
-    print("  Installation complete!")
+    print("  Virtual environment created!")
     print("=" * 60)
     print()
     print("IMPORTANT: You also need FFmpeg installed and on your PATH.")
     print("Download FFmpeg from https://ffmpeg.org/ if you haven't already.")
     print()
+
+
+def _requirements_hash() -> str:
+    return hashlib.sha256(REQUIREMENTS_FILE.read_bytes()).hexdigest()
+
+
+def ensure_dependencies(force: bool = False, fatal: bool = True) -> bool:
+    """Install requirements after first setup and whenever the file changes."""
+    if not REQUIREMENTS_FILE.is_file():
+        print(f"ERROR: Requirements file not found: {REQUIREMENTS_FILE}")
+        if fatal:
+            pause_exit(1)
+        return False
+
+    required_hash = _requirements_hash()
+    installed_hash = ""
+    try:
+        installed_hash = REQUIREMENTS_MARKER.read_text(encoding="ascii").strip()
+    except OSError:
+        pass
+
+    if not force and installed_hash == required_hash:
+        return True
+
+    print("Installing updated dependencies...")
+    command = [str(VENV_PYTHON), "-m", "pip", "install"]
+    if force:
+        command.append("--upgrade")
+    command.extend(("-r", str(REQUIREMENTS_FILE)))
+    result = _run(*command)
+    if result.returncode != 0:
+        message = "Failed to install required dependencies."
+        if fatal:
+            print(f"ERROR: {message}")
+            pause_exit(1)
+        else:
+            print(f"WARNING: {message} Some features may not work correctly.")
+        return False
+
+    REQUIREMENTS_MARKER.write_text(required_hash + "\n", encoding="ascii")
+    print("Dependencies are up to date.")
+    print()
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -170,9 +209,7 @@ def _git_available() -> bool:
 
 def _pip_upgrade() -> None:
     print("Updating dependencies...")
-    result = _run(str(VENV_PIP), "install", "--upgrade", "-r", "requirements.txt")
-    if result.returncode != 0:
-        print("WARNING: Dependency update failed — some features may not work correctly.")
+    ensure_dependencies(force=True, fatal=False)
 
 
 def check_git(cfg: dict) -> None:
@@ -353,6 +390,7 @@ def main() -> None:
 
     cfg = load_config()
     ensure_venv()
+    ensure_dependencies()
 
     if DEV_MODE:
         os.startfile(str(PROJECT_DIR))   # open Explorer
