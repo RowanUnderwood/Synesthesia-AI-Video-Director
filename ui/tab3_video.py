@@ -1,5 +1,6 @@
 import os
 import glob
+import hashlib
 import re
 import time
 import threading
@@ -232,6 +233,10 @@ def build(pm_state, current_proj_var, shared_shot_state):
         row_idx = pm.df.index[pm.df['Shot_ID'].astype(str).str.upper() == str(shot_id).upper()].tolist()
         if row_idx and "First_Frame_Prompt" in pm.df.columns:
             pm.df.at[row_idx[0], 'First_Frame_Prompt'] = new_prompt
+            if "First_Frame_Prompt_Purpose" in pm.df.columns:
+                pm.df.at[row_idx[0], "First_Frame_Prompt_Purpose"] = "manual" if str(new_prompt or "").strip() else ""
+            if "First_Frame_Prompt_Source_Hash" in pm.df.columns:
+                pm.df.at[row_idx[0], "First_Frame_Prompt_Source_Hash"] = ""
             # Prompt changed — clear any cached first frame image so a fresh one is generated
             for column in ("First_Frame_Image_Path", "First_Frame_Image_Source",
                            "First_Frame_Image_Aspect", "First_Frame_Image_Prompt_Hash"):
@@ -348,6 +353,9 @@ def build(pm_state, current_proj_var, shared_shot_state):
             # Clear stale cached first-frame prompt whenever the video prompt changes
             if "First_Frame_Prompt" in pm.df.columns:
                 pm.df.at[row_idx[0], 'First_Frame_Prompt'] = ""
+            for column in ("First_Frame_Prompt_Purpose", "First_Frame_Prompt_Source_Hash"):
+                if column in pm.df.columns:
+                    pm.df.at[row_idx[0], column] = ""
             # Clear override — base prompt changed so override text is now stale
             pm.df.at[row_idx[0], 'Prompt_Override'] = ''
             pm.df.at[row_idx[0], 'Prompt_Override_Text'] = ''
@@ -898,6 +906,16 @@ def build(pm_state, current_proj_var, shared_shot_state):
                                                 if _ridx and "First_Frame_Prompt" in pm.df.columns:
                                                     with pm.queue_lock:
                                                         pm.df.at[_ridx[0], "First_Frame_Prompt"] = _converted
+                                                        if "First_Frame_Prompt_Purpose" in pm.df.columns:
+                                                            if config.VIDEO_BACKEND == "MiniMax H3" and _type == "Vocal" and _vm == "Use Storyboard Prompt":
+                                                                purpose = "h3_vocal_storyboard"
+                                                            elif config.VIDEO_BACKEND == "MiniMax H3":
+                                                                purpose = "h3_action_target"
+                                                            else:
+                                                                purpose = "zimage_generated"
+                                                            pm.df.at[_ridx[0], "First_Frame_Prompt_Purpose"] = purpose
+                                                        if "First_Frame_Prompt_Source_Hash" in pm.df.columns:
+                                                            pm.df.at[_ridx[0], "First_Frame_Prompt_Source_Hash"] = hashlib.sha256(_base.encode("utf-8")).hexdigest()
                                                         pm.save_data()
                                                 if _type == "Vocal" and _vm == "Use Singer/Band Description":
                                                     pm.save_project_settings({
@@ -1300,6 +1318,9 @@ def build(pm_state, current_proj_var, shared_shot_state):
             # Clear stale first-frame caches since the video prompt changed
             if "First_Frame_Prompt" in pm.df.columns:
                 pm.df.at[index, 'First_Frame_Prompt'] = ""
+            for column in ("First_Frame_Prompt_Purpose", "First_Frame_Prompt_Source_Hash"):
+                if column in pm.df.columns:
+                    pm.df.at[index, column] = ""
             for column in ("First_Frame_Image_Path", "First_Frame_Image_Source",
                            "First_Frame_Image_Aspect", "First_Frame_Image_Prompt_Hash"):
                 if column in pm.df.columns:
@@ -1323,6 +1344,17 @@ def build(pm_state, current_proj_var, shared_shot_state):
                 new_ffp = convert_prompt_for_zimage(base_for_image, pm, settings)
                 if "First_Frame_Prompt" in pm.df.columns:
                     pm.df.at[index, 'First_Frame_Prompt'] = new_ffp
+                    if "First_Frame_Prompt_Purpose" in pm.df.columns:
+                        pm.df.at[index, "First_Frame_Prompt_Purpose"] = (
+                            "h3_vocal_storyboard"
+                            if config.VIDEO_BACKEND == "MiniMax H3" and row['Type'] == 'Vocal'
+                            and vocal_mode == "Use Storyboard Prompt"
+                            else "zimage_generated"
+                        )
+                    if "First_Frame_Prompt_Source_Hash" in pm.df.columns:
+                        pm.df.at[index, "First_Frame_Prompt_Source_Hash"] = hashlib.sha256(
+                            base_for_image.encode("utf-8")
+                        ).hexdigest()
                     pm.save_data()
 
             add_to_render_queue(shot_id_txt, resolution, vocal_mode, style, director, generation_mode, pm,
@@ -1420,6 +1452,19 @@ def build(pm_state, current_proj_var, shared_shot_state):
             new_ffp = convert_prompt_for_zimage(base, pm, settings)
             if "First_Frame_Prompt" in pm.df.columns:
                 pm.df.at[row_idx[0], "First_Frame_Prompt"] = new_ffp
+                if "First_Frame_Prompt_Purpose" in pm.df.columns:
+                    purpose = (
+                        "h3_vocal_storyboard"
+                        if config.VIDEO_BACKEND == "MiniMax H3" and row.get("Type") == "Vocal"
+                        and vocal_mode == "Use Storyboard Prompt"
+                        else "h3_action_target" if config.VIDEO_BACKEND == "MiniMax H3"
+                        else "zimage_generated"
+                    )
+                    pm.df.at[row_idx[0], "First_Frame_Prompt_Purpose"] = purpose
+                if "First_Frame_Prompt_Source_Hash" in pm.df.columns:
+                    pm.df.at[row_idx[0], "First_Frame_Prompt_Source_Hash"] = hashlib.sha256(
+                        base.encode("utf-8")
+                    ).hexdigest()
             # Clear cached first frame image — new prompt means a new image should be generated
             for column in ("First_Frame_Image_Path", "First_Frame_Image_Source",
                            "First_Frame_Image_Aspect", "First_Frame_Image_Prompt_Hash"):

@@ -617,6 +617,7 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
             generation_mode=generation_mode,
             caching_mode=caching_mode,
             use_llm_image_prompt=use_llm_image_prompt,
+            vocal_mode=vocal_mode,
         )
         return
 

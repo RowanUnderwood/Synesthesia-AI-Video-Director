@@ -4,7 +4,7 @@ How to drive `H3 Single Shot - Lip-Sync + Reference images_API.json` from anothe
 application.
 
 One POST produces **one lip-synced shot of up to 15 seconds** from two character
-reference images, an audio clip, and a prompt. It writes two MP4s: native resolution and
+reference images, an optional setting/target-frame image, an audio clip, and a prompt. It writes two MP4s: native resolution and
 an RTX VSR 2× upscale. There is no shot sequencing, no checkpointing, and no continuity
 state — the calling application owns all of that.
 
@@ -14,7 +14,7 @@ state — the calling application owns all of that.
 
 - [What it produces](#what-it-produces)
 - [Prerequisites](#prerequisites)
-- [The five inputs you change per shot](#the-five-inputs-you-change-per-shot)
+- [The inputs you change per shot](#the-inputs-you-change-per-shot)
 - [End-to-end client](#end-to-end-client)
 - [Hard rules](#hard-rules) ← **read this before writing any code**
 - [Node map](#node-map)
@@ -31,6 +31,10 @@ For each queued prompt, in `ComfyUI/output/h3_shot/`:
 | --- | --- | --- | --- | --- |
 | `shot_NNNNN-audio.mp4` | `2293` | 960 × 544 | 362 | 15.083 s |
 | `shot_rtx_NNNNN-audio.mp4` | `2402` | 1920 × 1088 | 362 | 15.083 s |
+
+Those dimensions are the template's default 16:9 canvas. Synesthesia patches the
+native canvas to the selected H3 aspect at roughly 0.5 MP; the RTX output remains a
+2× upscale of that aspect-aware native canvas.
 
 Both carry a 32 kHz stereo AAC track. `NNNNN` is a counter ComfyUI assigns; never
 predict it — read it back from the history response.
@@ -78,7 +82,7 @@ else references them.
 
 ---
 
-## The five inputs you change per shot
+## The inputs you change per shot
 
 Everything else in the JSON is fixed configuration. Load the file, patch these, POST.
 
@@ -86,6 +90,7 @@ Everything else in the JSON is fixed configuration. Load the file, patch these, 
 | --- | --- | --- |
 | `910` | `inputs.image` | Face / identity reference — filename in ComfyUI's `input/` |
 | `911` | `inputs.image` | Full-body / wardrobe reference — same performer |
+| `912` | `inputs.image` | Optional setting/target first frame — added by the Synesthesia patch for Storyboard Prompt mode |
 | `940` | `inputs.audio` | This shot's audio clip — **must be ≥ 15.084 s**, see [Rule 3](#rule-3--the-audio-clip-must-be-at-least-length--24-seconds) |
 | `110` | `inputs.prompt` | The H3 REF-format prompt (six sections) |
 | `120` | `inputs.noise_seed` | Change to regenerate; keep to reproduce |
@@ -138,12 +143,21 @@ def upload(path, overwrite=True):
     return json.load(urllib.request.urlopen(req))["name"]
 
 
-def render_shot(workflow_path, face, body, audio, prompt_text, seed, duration=15.0):
+def render_shot(workflow_path, face, body, audio, prompt_text, seed, duration=15.0,
+                target_frame=None):
     with open(workflow_path, encoding="utf-8") as fh:
         wf = json.load(fh)
 
     wf["910"]["inputs"]["image"] = upload(face)
     wf["911"]["inputs"]["image"] = upload(body)
+    if target_frame:
+        wf["912"] = dict(wf["910"])
+        wf["912"]["inputs"] = {"image": upload(target_frame)}
+        wf["912"]["_meta"] = {"title": "SETTING / TARGET FIRST FRAME"}
+        refs = wf["110"]["inputs"]
+        refs["ref_images.ref_image_0"] = ["912", 0]
+        refs["ref_images.ref_image_1"] = ["910", 0]
+        refs["ref_images.ref_image_2"] = ["911", 0]
     wf["940"]["inputs"]["audio"] = upload(audio)
     wf["110"]["inputs"]["prompt"] = prompt_text
     wf["120"]["inputs"]["noise_seed"] = seed
@@ -199,8 +213,13 @@ Every one of these was a real failure during integration. Four of them fail **si
 ```jsonc
 "102": { "inputs": { "values.a": ["101", 0] } }
 "110": { "inputs": { "ref_images.ref_image_0": ["910", 0],
-                     "ref_images.ref_image_1": ["911", 0] } }
+                     "ref_images.ref_image_1": ["911", 0],
+                     "ref_images.ref_image_2": ["912", 0] } }
 ```
+
+The numeric order must match the prompt's `<Picture N>` order. Synesthesia's
+three-image lip-sync route uses target frame → face → body, while the legacy two-image
+route uses face → body.
 
 Not `a`. Not `ref_image_0`. ComfyUI nests them at execution time via
 `_io.build_nested_inputs()`.
@@ -329,7 +348,7 @@ UNETLoader(1) → AttentionBackend(1756) → TurboLoRA(977) → SigmaShift(5) �
                                                                         └─→ Scheduler(123) ───┤
 CLIPLoader(2) ─┐                                                          Steps(970) ─────────┘│
 VAELoader(3,4) ├─→ MiniMaxH3ReferenceToVideo(110) ─┬─ positive ────────────────────────────────┘
-LoadImage(910,911) ┘   960×544, length ← 362       └─ LATENT ─→ SongMaskedAVContext(1755) ──┐
+LoadImage(910,911[,912]) ┘ aspect-aware, length ← 362 └─ LATENT → SongMaskedAVContext(1755) ─┐
 ResolutionSelector(100) ┘                             LoadAudio(940) ─────────┘             │
 Duration(101) → FrameLength(102) ┘                                                          │
                                                                                             ▼

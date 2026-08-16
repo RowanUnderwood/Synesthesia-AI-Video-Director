@@ -4,6 +4,7 @@ import os
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 import h3
 import pandas as pd
@@ -146,8 +147,128 @@ class H3WorkflowTests(unittest.TestCase):
         self.assertEqual(workflow["910"]["inputs"]["image"], "face.png")
         self.assertEqual(workflow["911"]["inputs"]["image"], "body.png")
         self.assertEqual(workflow["940"]["inputs"]["audio"], "shot.wav")
+        self.assertEqual(workflow["100"]["inputs"]["aspect_ratio"], "16:9 (Widescreen)")
+        self.assertNotIn("ref_images.ref_image_2", workflow["110"]["inputs"])
         self.assertFalse(workflow["2293"]["inputs"]["trim_to_audio"])
         self.assertFalse(workflow["2402"]["inputs"]["trim_to_audio"])
+
+    def test_lipsync_patch_adds_target_as_picture_one_and_honors_4_3(self):
+        workflow = h3.patch_h3_lipsync(
+            "face.png", "body.png", "shot.wav", "prompt", 8.0,
+            "synesthesia_h3/test", seed=5, target_image="setting.png",
+            aspect="4:3 - Landscape",
+        )
+        self.assertEqual(workflow["912"]["inputs"]["image"], "setting.png")
+        inputs = workflow["110"]["inputs"]
+        self.assertEqual(inputs["ref_images.ref_image_0"], ["912", 0])
+        self.assertEqual(inputs["ref_images.ref_image_1"], ["910", 0])
+        self.assertEqual(inputs["ref_images.ref_image_2"], ["911", 0])
+        self.assertEqual(workflow["100"]["inputs"]["aspect_ratio"], "4:3 (Standard)")
+
+    def test_lipsync_patch_uses_explicit_dimensions_for_custom_ratio(self):
+        workflow = h3.patch_h3_lipsync(
+            "face.png", "body.png", "shot.wav", "prompt", 8.0,
+            "synesthesia_h3/test", seed=6, aspect="CUSTOM",
+            custom_width=5, custom_height=8,
+        )
+        self.assertEqual(workflow["100"]["class_type"], "PrimitiveInt")
+        self.assertEqual(workflow["103"]["class_type"], "PrimitiveInt")
+        width = workflow["100"]["inputs"]["value"]
+        height = workflow["103"]["inputs"]["value"]
+        self.assertEqual((width % 32, height % 32), (0, 0))
+        self.assertAlmostEqual(width / height, 5 / 8, delta=0.06)
+        self.assertEqual(workflow["110"]["inputs"]["height"], ["103", 0])
+
+    def test_lipsync_target_rewrite_contract_assigns_picture_roles(self):
+        class FakePM:
+            def load_project_settings(self):
+                return {}
+
+            def save_project_settings(self, value):
+                self.saved = value
+
+        with patch.object(h3.LLMBridge, "query", return_value="rewritten") as query:
+            result = h3.rewrite_h3_prompt(
+                FakePM(), "Singer performs in a station.", 5.0, "LIPSYNC_TARGET",
+                ["<Picture 1>: target frame", "<Picture 2>: face", "<Picture 3>: body"],
+                "vision-model",
+            )
+        self.assertEqual(result, "rewritten")
+        system_prompt = query.call_args.args[0]
+        self.assertIn("<Picture 1> as a standalone concrete first frame", system_prompt)
+        self.assertIn("<Picture 2> for facial identity", system_prompt)
+        self.assertIn("<Picture 3> for full-body", system_prompt)
+        self.assertIn("never invent lyrics", system_prompt)
+
+    def test_storyboard_vocal_routes_target_frame_into_lipsync_patch(self):
+        with tempfile.TemporaryDirectory() as root:
+            setting = os.path.join(root, "setting.png")
+            face = os.path.join(root, "face.png")
+            body = os.path.join(root, "body.png")
+            for path in (setting, face, body):
+                with open(path, "wb") as handle:
+                    handle.write(b"reference")
+
+            class FakePM:
+                current_project = "project"
+                base_dir = root
+                queue_lock = threading.Lock()
+                stop_video_generation = False
+                df = pd.DataFrame([{
+                    "Shot_ID": "S001", "Type": "Vocal", "Duration": 5.0,
+                    "Total_Frames": 120, "Status": "Pending", "Video_Path": "",
+                    "Render_Resolution": "",
+                }])
+
+                def load_project_settings(self):
+                    return {
+                        "h3_lead_character": "Alice", "h3_aspect": "4:3 - Landscape",
+                        "h3_quality": "0.65 MP - Balanced", "h3_custom_width": 16,
+                        "h3_custom_height": 9, "h3_lipsync_output": "Native",
+                    }
+
+                def get_path(self, name):
+                    path = os.path.join(root, name)
+                    os.makedirs(path, exist_ok=True)
+                    return path
+
+                def save_data(self):
+                    pass
+
+            class FakeClient:
+                def __init__(self, _url):
+                    pass
+
+                def upload_input(self, path, _job_id):
+                    return os.path.basename(path)
+
+                def submit(self, _workflow, _client_id):
+                    return "prompt-id"
+
+                def download(self, _descriptor, destination):
+                    return str(destination)
+
+            pm = FakePM()
+            with patch.object(h3, "ComfyClient", FakeClient), \
+                    patch.object(h3, "h3_reference_paths", return_value=(face, body)), \
+                    patch.object(h3, "_generate_h3_target_frame", return_value=[
+                        (setting, {"prompt": "setting prompt"}),
+                    ]) as target_generator, \
+                    patch.object(h3, "rewrite_h3_prompt", return_value="rewritten") as rewrite, \
+                    patch.object(h3, "_h3_audio_chunk", return_value=os.path.join(root, "shot.wav")), \
+                    patch.object(h3, "patch_h3_lipsync", wraps=h3.patch_h3_lipsync) as builder, \
+                    patch.object(h3, "_record_job"), \
+                    patch.object(h3, "_wait_for_output", return_value={"filename": "shot.mp4"}):
+                updates = list(h3.generate_h3_video_for_shot(
+                    "S001", pm.df.loc[0], 0, pm, "Storyboard venue prompt",
+                    vocal_mode="Use Storyboard Prompt",
+                ))
+
+            self.assertTrue(target_generator.called)
+            self.assertEqual(rewrite.call_args.args[3], "LIPSYNC_TARGET")
+            self.assertEqual(builder.call_args.kwargs["target_image"], "setting.png")
+            self.assertEqual(builder.call_args.kwargs["aspect"], "4:3 - Landscape")
+            self.assertTrue(updates[-1][0].endswith(".mp4"))
 
 
 if __name__ == "__main__":

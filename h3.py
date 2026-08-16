@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import mimetypes
 import os
 import re
@@ -51,6 +52,14 @@ H3_LANDSCAPE_ASPECTS = {
         "ratio": "4:3", "width": 1184, "height": 896,
         "krea_aspect": "4:3", "krea_direction": "landscape", "krea_shortside": 896,
     },
+}
+H3_LIPSYNC_ASPECT_OPTIONS = {
+    "16:9 - Landscape": "16:9 (Widescreen)",
+    "4:3 - Landscape": "4:3 (Standard)",
+    "1:1 - Square": "1:1 (Square)",
+    "2:3 - Classic": "2:3 (Portrait Photo)",
+    "3:4 - Photo": "3:4 (Portrait Standard)",
+    "9:16 - Social": "9:16 (Portrait Widescreen)",
 }
 H3_QUALITY_PRESETS = [
     "144p", "240p", "360p", "480p", "540p", "576p", "720p", "900p",
@@ -332,6 +341,40 @@ def h3_target_dimensions(aspect: str, custom_width: int = 16, custom_height: int
     return max(32, round(width / 32) * 32), max(32, round(height / 32) * 32)
 
 
+def h3_lipsync_dimensions(aspect: str, custom_width: int = 16,
+                          custom_height: int = 9) -> tuple[int, int]:
+    """Return a roughly 0.5 MP, multiple-of-32 canvas for custom lip-sync ratios."""
+    raw = h3_aspect_cache_key(aspect, custom_width, custom_height)
+    match = re.search(r"(\d+)\s*:\s*(\d+)", raw)
+    width_ratio, height_ratio = (int(match.group(1)), int(match.group(2))) if match else (16, 9)
+    ratio = width_ratio / max(height_ratio, 1)
+    width = math.sqrt(500_000 * ratio)
+    height = math.sqrt(500_000 / ratio)
+    return max(32, round(width / 32) * 32), max(32, round(height / 32) * 32)
+
+
+def _patch_lipsync_resolution(workflow: dict, aspect: str,
+                              custom_width: int = 16, custom_height: int = 9) -> None:
+    option = H3_LIPSYNC_ASPECT_OPTIONS.get(aspect)
+    if option:
+        workflow["100"]["inputs"].update({
+            "aspect_ratio": option, "megapixels": 0.5, "multiple": 32,
+        })
+        return
+
+    width, height = h3_lipsync_dimensions(aspect, custom_width, custom_height)
+    workflow["100"] = {
+        "inputs": {"value": width}, "class_type": "PrimitiveInt",
+        "_meta": {"title": "H3 LIP-SYNC WIDTH"},
+    }
+    workflow["103"] = {
+        "inputs": {"value": height}, "class_type": "PrimitiveInt",
+        "_meta": {"title": "H3 LIP-SYNC HEIGHT"},
+    }
+    workflow["110"]["inputs"]["width"] = ["100", 0]
+    workflow["110"]["inputs"]["height"] = ["103", 0]
+
+
 def patch_krea2(prompt: str, filename_prefix: str, aspect: str = "1:1",
                 direction: str = "landscape", shortside: int = 1024, seed: int | None = None) -> dict:
     workflow = _workflow_template(KREA_WORKFLOW, {
@@ -401,7 +444,9 @@ def patch_h3_ref2(image_names: list[str], prompt: str, duration_seconds: float, 
 
 def patch_h3_lipsync(face_image: str, body_image: str, audio_name: str, prompt: str,
                      duration_seconds: float, filename_prefix: str, seed: int | None = None,
-                     upscaled: bool = True) -> dict:
+                     upscaled: bool = True, target_image: str | None = None,
+                     aspect: str = "16:9 - Landscape", custom_width: int = 16,
+                     custom_height: int = 9) -> dict:
     workflow = _workflow_template(H3_LIPSYNC_WORKFLOW, {
         "110": "MiniMaxH3ReferenceToVideo", "910": "LoadImage", "911": "LoadImage",
         "940": "LoadAudio", "120": "RandomNoise", "2293": "VHS_VideoCombine",
@@ -410,10 +455,19 @@ def patch_h3_lipsync(face_image: str, body_image: str, audio_name: str, prompt: 
     workflow = copy.deepcopy(workflow)
     workflow["910"]["inputs"]["image"] = face_image
     workflow["911"]["inputs"]["image"] = body_image
+    references = workflow["110"]["inputs"]
+    if target_image:
+        workflow["912"] = copy.deepcopy(workflow["910"])
+        workflow["912"]["inputs"]["image"] = target_image
+        workflow["912"]["_meta"]["title"] = "STEP 1 — SETTING / TARGET FRAME"
+        references["ref_images.ref_image_0"] = ["912", 0]
+        references["ref_images.ref_image_1"] = ["910", 0]
+        references["ref_images.ref_image_2"] = ["911", 0]
     workflow["940"]["inputs"]["audio"] = audio_name
     workflow["110"]["inputs"]["prompt"] = prompt
     workflow["120"]["inputs"]["noise_seed"] = int(seed if seed is not None else uuid.uuid4().int % 10**15)
     workflow["101"]["inputs"]["value"] = float(duration_seconds)
+    _patch_lipsync_resolution(workflow, aspect, custom_width, custom_height)
     workflow["2293"]["inputs"].update({"filename_prefix": f"{filename_prefix}_native", "trim_to_audio": False})
     workflow["2402"]["inputs"].update({"filename_prefix": f"{filename_prefix}_rtx", "trim_to_audio": False})
     if not upscaled:
@@ -516,7 +570,36 @@ def rewrite_h3_prompt(pm, source_prompt: str, duration: float, mode: str, labels
     cache = settings.get("h3_prompt_cache", {})
     if isinstance(cache, dict) and cache.get(key):
         return str(cache[key])
-    if mode == "REF2VA":
+    if mode == "LIPSYNC_TARGET":
+        system = (
+            "You format MiniMax H3 lip-sync prompts with a target first frame and performer identity references. "
+            "Return only six English sections in this exact order: subject_definitions, summary, "
+            "retention_analysis, detailed_description, overall_soundscape, non_diegetic_music. Define "
+            "<Picture 1> as a standalone concrete first frame and setting/composition anchor. Define one "
+            "<Subject 1> performer jointly from <Picture 2> for facial identity and <Picture 3> for full-body "
+            "appearance and wardrobe; do not define those identity pictures as standalone entries. Begin the "
+            "summary with [keyframe completion + reference generation]. Make the opening composition correspond "
+            "to <Picture 1>, preserve the performer's identity and wardrobe, and describe visibly readable singing "
+            "throughout the supplied performance. Preserve any supplied lyrics or dialogue verbatim, but never "
+            "invent lyrics, dialogue, <Audio N> labels, or reference-audio relationships."
+        )
+        contract = (
+            "Use the H3 full-reference lip-sync format with Picture 1 as the concrete target first frame and "
+            "Pictures 2-3 as the lead performer's identity references."
+        )
+    elif mode == "LIPSYNC_IDENTITY":
+        system = (
+            "You format MiniMax H3 lip-sync prompts with performer identity references. Return only six English "
+            "sections in this exact order: subject_definitions, summary, retention_analysis, detailed_description, "
+            "overall_soundscape, non_diegetic_music. Define one <Subject 1> performer jointly from <Picture 1> "
+            "for facial identity and <Picture 2> for full-body appearance and wardrobe; do not define those "
+            "identity pictures as standalone entries. Begin the summary with [reference generation]. Preserve the "
+            "performer's identity and wardrobe and describe visibly readable singing throughout the supplied "
+            "performance. Preserve any supplied lyrics or dialogue verbatim, but never invent lyrics, dialogue, "
+            "<Audio N> labels, or reference-audio relationships."
+        )
+        contract = "Use the H3 full-reference lip-sync format with two performer identity pictures."
+    elif mode == "REF2VA":
         system = (
             "You format MiniMax H3 full-reference video prompts. Return only six English sections in this "
             "exact order: subject_definitions, summary, retention_analysis, detailed_description, "
@@ -587,10 +670,32 @@ def _clean_cell(value) -> str:
 def _generate_h3_target_frame(shot_id, row, row_index: int, pm, source_prompt: str,
                               generation_mode: str, caching_mode: str, aspect: str,
                               custom_width: int, custom_height: int,
-                              use_llm_image_prompt: bool):
+                              use_llm_image_prompt: bool,
+                              prompt_purpose: str = "h3_action_target"):
     """Yield progress plus a final ``(path, {prompt: ...})`` record."""
     skip_prompt_cache = caching_mode == "Regenerate both on each render"
     first_frame_prompt = "" if skip_prompt_cache else _clean_cell(row.get("First_Frame_Prompt", ""))
+    source_hash = hashlib.sha256(source_prompt.encode("utf-8")).hexdigest()
+    cached_purpose = _clean_cell(row.get("First_Frame_Prompt_Purpose", ""))
+    cached_source_hash = _clean_cell(row.get("First_Frame_Prompt_Source_Hash", ""))
+    prompt_cache_mismatch = bool(
+        first_frame_prompt and cached_purpose and cached_purpose != "manual"
+        and (cached_purpose != prompt_purpose or cached_source_hash != source_hash)
+    )
+    if (first_frame_prompt and not cached_purpose and prompt_purpose == "h3_vocal_storyboard"
+            and first_frame_prompt == _clean_cell(
+                pm.load_project_settings().get("zimage_vocal_first_frame_prompt", "")
+            )):
+        prompt_cache_mismatch = True
+    if prompt_cache_mismatch:
+        first_frame_prompt = ""
+        with pm.queue_lock:
+            for column in ("First_Frame_Prompt", "First_Frame_Prompt_Purpose",
+                           "First_Frame_Prompt_Source_Hash"):
+                if column in pm.df.columns:
+                    pm.df.at[row_index, column] = ""
+            pm.save_data()
+        yield None, "♻️ Cached first-frame prompt belonged to a different source or purpose; regenerating..."
     if not first_frame_prompt:
         if use_llm_image_prompt:
             yield None, "🧠 Creating the setting/target-frame prompt..."
@@ -599,6 +704,10 @@ def _generate_h3_target_frame(shot_id, row, row_index: int, pm, source_prompt: s
             if not skip_prompt_cache:
                 with pm.queue_lock:
                     pm.df.at[row_index, "First_Frame_Prompt"] = first_frame_prompt
+                    if "First_Frame_Prompt_Purpose" in pm.df.columns:
+                        pm.df.at[row_index, "First_Frame_Prompt_Purpose"] = prompt_purpose
+                    if "First_Frame_Prompt_Source_Hash" in pm.df.columns:
+                        pm.df.at[row_index, "First_Frame_Prompt_Source_Hash"] = source_hash
                     pm.save_data()
         else:
             first_frame_prompt = source_prompt
@@ -675,7 +784,8 @@ def _generate_h3_target_frame(shot_id, row, row_index: int, pm, source_prompt: s
 def generate_h3_video_for_shot(shot_id, row, row_index: int, pm, source_prompt: str,
                                generation_mode="Krea 2 First Frame",
                                caching_mode="Use cached prompt",
-                               use_llm_image_prompt=False):
+                               use_llm_image_prompt=False,
+                               vocal_mode="Use Singer/Band Description"):
     """Generator matching video.generate_video_for_shot's (path, status) protocol."""
     try:
         timeline_frames = int(row.get("Total_Frames", round(float(row["Duration"]) * H3_FPS)))
@@ -699,19 +809,48 @@ def generate_h3_video_for_shot(shot_id, row, row_index: int, pm, source_prompt: 
             face, body = h3_reference_paths(pm, lead)
             if not face or not body:
                 raise ComfyError(f"Missing face/body reference images for {lead}. Generate them in Tab 2 first.")
-            labels = [f"<Picture 1>: close face reference for {lead}",
-                      f"<Picture 2>: full-body wardrobe reference for {lead}"]
+
+            target_frame = None
+            use_storyboard_target = vocal_mode == "Use Storyboard Prompt"
+            if use_storyboard_target:
+                for frame_path, update in _generate_h3_target_frame(
+                    shot_id, row, row_index, pm, source_prompt, generation_mode, caching_mode,
+                    aspect, custom_width, custom_height, use_llm_image_prompt,
+                    prompt_purpose="h3_vocal_storyboard",
+                ):
+                    if frame_path:
+                        target_frame = frame_path
+                    else:
+                        yield None, update
+                if not target_frame:
+                    raise ComfyError("The H3 vocal target-frame generator returned no image.")
+                labels = [
+                    "<Picture 1>: concrete target first frame and setting/composition anchor for this vocal shot",
+                    f"<Picture 2>: close face identity reference for {lead}",
+                    f"<Picture 3>: full-body wardrobe reference for {lead}",
+                ]
+                rewrite_mode = "LIPSYNC_TARGET"
+            else:
+                labels = [f"<Picture 1>: close face identity reference for {lead}",
+                          f"<Picture 2>: full-body wardrobe reference for {lead}"]
+                rewrite_mode = "LIPSYNC_IDENTITY"
             yield None, "🧠 Rewriting H3 lip-sync prompt..."
-            prompt = rewrite_h3_prompt(pm, source_prompt, render_duration, "REF2VA", labels, llm_model)
+            prompt = rewrite_h3_prompt(pm, source_prompt, render_duration, rewrite_mode, labels, llm_model)
             yield None, "🎙️ Preparing frame-accurate H3 vocal audio..."
             audio_path = _h3_audio_chunk(pm, row, render_frames, shot_id)
-            yield None, "⬆️ Uploading singer references and audio to H3 ComfyUI..."
+            yield None, (
+                "⬆️ Uploading target frame, singer references, and audio to H3 ComfyUI..."
+                if target_frame else "⬆️ Uploading singer references and audio to H3 ComfyUI..."
+            )
+            target_name = client.upload_input(target_frame, job_id) if target_frame else None
             face_name = client.upload_input(face, job_id)
             body_name = client.upload_input(body, job_id)
             audio_name = client.upload_input(audio_path, job_id)
             workflow = patch_h3_lipsync(
                 face_name, body_name, audio_name, prompt, render_duration,
                 f"synesthesia_h3/{job_id}", upscaled=settings.get("h3_lipsync_output", "RTX Upscaled") == "RTX Upscaled",
+                target_image=target_name, aspect=aspect,
+                custom_width=custom_width, custom_height=custom_height,
             )
             preferred = ["2402"] if settings.get("h3_lipsync_output", "RTX Upscaled") == "RTX Upscaled" else ["2293"]
             kind = "H3 lip-sync"
@@ -777,7 +916,8 @@ def generate_h3_video_for_shot(shot_id, row, row_index: int, pm, source_prompt: 
         with pm.queue_lock:
             pm.df.at[row_index, "Video_Path"] = local_path
             pm.df.at[row_index, "Status"] = "Done"
-            pm.df.at[row_index, "Render_Resolution"] = f"H3 {quality} {aspect}"
+            resolution_label = "0.5 MP lip-sync" if kind == "H3 lip-sync" else quality
+            pm.df.at[row_index, "Render_Resolution"] = f"H3 {resolution_label} {aspect}"
             pm.save_data()
         yield local_path, "Done"
     except Exception as exc:
