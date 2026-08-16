@@ -1,7 +1,7 @@
 <#
     register_gpu_power_task.ps1 — one-time setup for the GPU power-limit helper.
 
-    Registers the on-demand Scheduled Task `ImageAnimatorVideoExtenderGpuPower`, which runs
+    Registers the on-demand Scheduled Task `SynesthesiaAIVideoDirectorGpuPower`, which runs
     gpu_power.ps1 as SYSTEM.  That is what lets the unelevated app change GPU
     power limits (an Administrator-only operation) with `schtasks /run` and no
     UAC prompt.
@@ -17,10 +17,10 @@
 
 $ErrorActionPreference = 'Stop'
 
-$TaskName    = 'ImageAnimatorVideoExtenderGpuPower'
+$TaskName    = 'SynesthesiaAIVideoDirectorGpuPower'
 $SourcePs1   = Join-Path $PSScriptRoot 'gpu_power.ps1'
-$InstallDir  = Join-Path $env:ProgramData 'Image Animator and Video Extender\GpuPowerHelper'
-$ExchangeDir = Join-Path $env:ProgramData 'Image Animator and Video Extender\GpuPowerExchange'
+$InstallDir  = Join-Path $env:ProgramData 'Synesthesia AI Video Director\GpuPowerHelper'
+$ExchangeDir = Join-Path $env:ProgramData 'Synesthesia AI Video Director\GpuPowerExchange'
 $Ps1         = Join-Path $InstallDir 'gpu_power.ps1'
 
 $isAdmin = ([Security.Principal.WindowsPrincipal] `
@@ -82,7 +82,7 @@ try {
 
     Register-ScheduledTask -TaskName $TaskName -Action $action `
         -Principal $principal -Settings $settings `
-        -Description 'Applies and restores NVIDIA GPU power limits for Image Animator and Video Extender.' `
+        -Description 'Applies and restores NVIDIA GPU power limits for Synesthesia AI Video Director.' `
         -Force | Out-Null
 
     # THE WHOLE POINT OF THE FEATURE DEPENDS ON THIS.  A task registered with a

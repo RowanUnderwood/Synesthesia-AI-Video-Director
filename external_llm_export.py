@@ -55,7 +55,8 @@ def _backend_instructions(settings: dict) -> str:
         return """MINIMAX H3-SPECIFIC RULES
 - Include the lead singer in character_bibles.csv. H3 requires that Character Bible entry to generate the singer's face and full-body identity references.
 - Give the lead singer one unique first name and use that exact name consistently in relevant Video_Prompt cells.
-- Action prompts may name up to four recurring Character Bible characters per shot.
+- The entire project may have at most four named, visually tracked Character Bible characters, and the lead singer counts as one of those four. This is a hard MiniMax limit: one setting/target image plus two identity images for each of four characters fills all nine reference-image slots.
+- Additional people may appear without Character Bible tracking, but MiniMax may change their appearance between shots. Use untracked people only as background, crowd, or other non-continuity characters; do not make the story depend on their visual identity remaining stable.
 - Vocal prompts should describe the desired venue, composition, visible performance, action, camera movement, and ending state. When Vocal Shot Prompt Mode is Use Storyboard Prompt, the prompt also drives the generated target first frame.
 - Do not add MiniMax reference labels such as <Picture 1> or <Subject 1>; Synesthesia's H3 rewrite stage adds those labels.
 """
@@ -71,7 +72,18 @@ def build_instructions(pm, alignment: dict) -> str:
     matched = int(alignment.get("matched_lines", 0))
     eligible = int(alignment.get("eligible_lines", 0))
     coverage = 100 * matched / eligible if eligible else 0.0
-    timing_source = alignment.get("source", "legacy lyric scan").replace("_", " ")
+    raw_timing_source = str(alignment.get("source", "speech-to-text alignment"))
+    timing_source = raw_timing_source.replace("_", " ")
+    if "caption" in raw_timing_source.casefold():
+        lyric_timing_warning = (
+            "These lyric timestamps came from imported timed captions. They are still an aid rather than "
+            "permission to change the shot timing; use the shot-list intervals as authoritative."
+        )
+    else:
+        lyric_timing_warning = (
+            "The timestamp prefixes on the lyrics were estimated by a speech-to-text (STT) model and may "
+            "contain recognition or alignment errors. Treat them as helpful directing cues, not exact timing."
+        )
     return f"""SYNESTHESIA EXTERNAL VIDEO DIRECTOR HANDOFF
 
 PROJECT CONTEXT
@@ -83,8 +95,10 @@ Edit and return exactly these two CSV files:
 2. character_bibles.csv
 
 SHOT LIST RULES
-- Preserve every Shot_ID, row, Type, Start_Time, End_Time, Duration, Start_Frame, End_Frame, and Total_Frames exactly.
+- Preserve every Shot_ID, row, Start_Time, End_Time, Duration, Start_Frame, End_Frame, and Total_Frames exactly.
 - Do not add, delete, reorder, or retime shots.
+- You may change a Vocal shot's Type to Action when an Action shot is needed to tell the story or emphasize a particular sung line. Do not alter that shot's duration or any timing/frame field.
+- Never change an Action shot to Vocal. Action intervals contain no isolated vocal performance to drive lip-sync.
 - Fill or improve Video_Prompt. Do not edit internal cache, path, status, or render columns.
 - Keep valid CSV quoting. Video_Prompt contains commas and must remain one CSV field.
 - Use present tense and describe a coherent beginning, action progression, camera relationship, and ending composition.
@@ -104,7 +118,11 @@ IMPORT ORDER
 The user will import shot_list.csv first and character_bibles.csv second. Synesthesia then recalculates each shot's Characters column from exact names found in Video_Prompt.
 
 LYRIC TIMING QUALITY
-Timing source: {timing_source}. Matched {matched} of {eligible} lyric lines ({coverage:.1f}%). Lines without timestamp prefixes could not be aligned confidently. Treat their timing as unknown; do not guess that they occur near adjacent matched lines when chorus notation or ad-libs make that ambiguous.
+Timing source: {timing_source}. Matched {matched} of {eligible} lyric lines ({coverage:.1f}%). {lyric_timing_warning}
+
+Lines without timestamp prefixes could not be aligned confidently. Treat their timing as unknown; do not guess that they occur near adjacent matched lines when chorus notation or ad-libs make that ambiguous.
+
+The Vocal shot intervals in shot_list.csv do not inherit STT timing errors: their Start_Time and End_Time values are derived from the volume of the isolated vocal track. Treat those shot boundaries as authoritative.
 
 TIMESTAMPED LYRICS
 {pm.get_lyrics()}

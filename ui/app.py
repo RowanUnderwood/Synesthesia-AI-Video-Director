@@ -81,7 +81,7 @@ def build_app():
 
             _blank_update = gr.update()
             if "already exists" in msg or "Invalid" in msg:
-                return (msg,) + (_blank_update,) * 37
+                return (msg,) + (_blank_update,) * 38
 
             settings = pm.load_project_settings()
             df = pd.DataFrame(columns=config.REQUIRED_COLUMNS)
@@ -113,6 +113,10 @@ def build_app():
                 settings.get("bible_sys_prompt", config.CHARACTER_BIBLE_SYSTEM_PROMPT),
                 settings.get("bible_user_template", config.CHARACTER_BIBLE_USER_TEMPLATE),
                 settings.get("zimage_prompt_template", config.DEFAULT_ZIMAGE_PROMPT_CONVERSION_TEMPLATE),
+                gr.update(
+                    value=settings.get("h3_prompt_cache_mode", "Reuse cached H3 prompts"),
+                    visible=(config.VIDEO_BACKEND == "MiniMax H3"),
+                ),
                 settings.get("h3_aspect", "3:4 - Photo"),
                 settings.get("h3_quality", "0.65 MP - Balanced"),
                 settings.get("h3_lipsync_output", "RTX Upscaled"),
@@ -137,6 +141,7 @@ def build_app():
                      t5["concepts_bulk_template_in"], t5["concepts_vocals_template_in"], t5["concepts_scripted_template_in"],
                      t5["bible_sys_prompt_in"], t5["bible_user_template_in"],
                      t5["zimage_template_in"],
+                     t3["h3_prompt_cache_dropdown"],
                      t3["h3_aspect_dropdown"], t3["h3_quality_dropdown"], t3["h3_lipsync_output_dropdown"],
                      t3["h3_custom_width"], t3["h3_custom_height"],
                      t3["single_shot_dropdown"], t3["single_shot_type_radio"],
@@ -223,6 +228,10 @@ def build_app():
                           value=settings.get("llm_image_prompt_mode", "Use video prompt as-is")),
                 gr.update(visible=uses_generated_firstframe,
                           value=settings.get("first_frame_reuse_mode", "Use cached prompt")),
+                gr.update(
+                    visible=(config.VIDEO_BACKEND == "MiniMax H3"),
+                    value=settings.get("h3_prompt_cache_mode", "Reuse cached H3 prompts"),
+                ),
                 gr.update(visible=uses_generated_firstframe),
                 gr.update(visible=(loaded_firstframe == "Z-Image First Frame" and config.VIDEO_BACKEND != "MiniMax H3"),
                           choices=(["ComfyUI"] if config.VIDEO_BACKEND == "MiniMax H3" else ["LTX Desktop", "ComfyUI", "ComfyUI-run-ahead"]),
@@ -278,7 +287,8 @@ def build_app():
                 t2["ffp_style_dropdown"], t2["ffp_director_dropdown"],
                 # Tab 3 generation preferences
                 t3["vid_firstframe_mode"], t3["llm_image_prompt_dropdown"],
-                t3["first_frame_reuse_dropdown"], t3["first_frame_prompt_row"],
+                t3["first_frame_reuse_dropdown"], t3["h3_prompt_cache_dropdown"],
+                t3["first_frame_prompt_row"],
                 t3["vid_zimage_backend"],
                 t3["vid_vocal_prompt_mode"], t3["vid_gen_mode_dropdown"],
                 t3["vid_versions_dropdown"], t3["vid_resolution_dropdown"],
@@ -303,9 +313,13 @@ def build_app():
         )
 
         t5["video_backend_drp"].change(
-            lambda backend: gr.update(visible=(backend == "MiniMax H3")),
+            lambda backend: (
+                gr.update(visible=(backend == "MiniMax H3")),
+                gr.update(visible=(backend == "MiniMax H3")),
+                gr.update(visible=(backend == "MiniMax H3")),
+            ),
             inputs=[t5["video_backend_drp"]],
-            outputs=[t3["h3_row"]],
+            outputs=[t3["h3_row"], t3["h3_prompt_cache_row"], t3["h3_prompt_cache_status"]],
         )
 
         def update_firstframe_backend(backend, current_mode, pm):

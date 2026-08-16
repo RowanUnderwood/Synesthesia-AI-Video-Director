@@ -63,7 +63,7 @@ def _log_ltx_error(method, url, error, response=None):
     print(f"{'='*60}")
 
 
-def convert_prompt_for_zimage(base_prompt, pm, settings=None):
+def convert_prompt_for_zimage(base_prompt, pm, settings=None, llm=None, llm_model=None):
     """Convert a video prompt into a still-image first-frame prompt via LLM.
 
     Uses the project's zimage_prompt_template setting (falls back to the default
@@ -73,8 +73,8 @@ def convert_prompt_for_zimage(base_prompt, pm, settings=None):
     if settings is None:
         settings = pm.load_project_settings()
     template = settings.get("zimage_prompt_template", config.DEFAULT_ZIMAGE_PROMPT_CONVERSION_TEMPLATE)
-    llm_model = config.LM_STUDIO_MODEL
-    llm = LLMBridge()
+    llm_model = llm_model or config.LM_STUDIO_MODEL
+    llm = llm or LLMBridge()
     user_msg = template.replace("{prompt}", base_prompt)
     return llm.query(config.ZIMAGE_PROMPT_SYSTEM_PROMPT, user_msg, llm_model)
 
@@ -317,7 +317,8 @@ def generate_zimage_first_frame(prompt, shot_id, pm):
     yield (local_path, None)
 
 
-def generate_comfyui_zimage_first_frame(prompt, shot_id, pm, width=None, height=None):
+def generate_comfyui_zimage_first_frame(prompt, shot_id, pm, width=None, height=None,
+                                        stop_check=None):
     """Generate a Z-Image first frame via ComfyUI using ZImage_Poster_API.json.
     Same generator interface as generate_zimage_first_frame: yields progress strings,
     final yield is (local_path, None) on success or (None, error_msg) on failure."""
@@ -363,6 +364,17 @@ def generate_comfyui_zimage_first_frame(prompt, shot_id, pm, width=None, height=
     history_url = f"{config.COMFYUI_URL.rstrip('/')}/history/{prompt_id}"
     max_polls = 300  # 5-minute timeout at 1s intervals
     for poll_count in range(max_polls):
+        if stop_check and stop_check():
+            base = config.COMFYUI_URL.rstrip('/')
+            try:
+                queue_state = requests.get(f"{base}/queue", timeout=5).json()
+                requests.post(f"{base}/queue", json={"delete": [prompt_id]}, timeout=5)
+                if str(prompt_id) in json.dumps(queue_state.get("queue_running", [])):
+                    requests.post(f"{base}/interrupt", timeout=5)
+            except requests.exceptions.RequestException:
+                pass
+            yield (None, "ComfyUI Z-Image generation cancelled.")
+            return
         time.sleep(1)
         try:
             hist_resp = requests.get(history_url, timeout=5)
@@ -537,7 +549,6 @@ def _has_valid_cached_first_frame(item: dict, pm) -> bool:
     if item.get('caching_mode') != 'Use cached image':
         return False
     try:
-        import pandas as pd
         if 'First_Frame_Image_Path' not in pm.df.columns:
             return False
         row = pm.df[pm.df['Shot_ID'] == item['shot_id']]
@@ -552,7 +563,48 @@ def _has_valid_cached_first_frame(item: dict, pm) -> bool:
         return False
 
 
-def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, director=None, generation_mode="LTX-Native", camera_motion="none", use_llm_image_prompt=False, caching_mode="Use cached prompt", vocal_chain_mode=False, zimage_backend="LTX Desktop", lora_path=None):
+def assemble_shot_prompt(shot_id, vocal_mode, pm, style=None, director=None):
+    """Build the exact positive prompt used by generation without starting a backend.
+
+    The pipelined queue calls this before its LLM/image stages. Keeping prompt
+    assembly here prevents the prepared H3 render from drifting from legacy.
+    """
+    row_indices = pm.df.index[
+        pm.df['Shot_ID'].astype(str).str.upper() == str(shot_id).upper()
+    ].tolist()
+    if not row_indices:
+        raise ValueError("Shot not found in timeline.")
+    row_index = row_indices[0]
+    row = pm.df.loc[row_index]
+    is_override = str(row.get('Prompt_Override', '')).strip().lower() == 'true'
+    if is_override:
+        prompt = str(row.get('Prompt_Override_Text', '')).strip()
+        if not prompt:
+            raise ValueError(f"Override flag is set for {shot_id} but override text is empty.")
+        return row, row_index, prompt
+    raw = row.get('Video_Prompt', '')
+    prompt = "" if pd.isna(raw) else str(raw).strip()
+    if row.get('Type') == "Vocal" and vocal_mode == "Use Singer/Band Description":
+        performance = pm.load_project_settings().get("performance_desc", "")
+        if performance:
+            prompt = performance
+    if not prompt:
+        raise ValueError("Missing Video Prompt.")
+    if pm.character_bibles:
+        prompt = apply_character_bibles(prompt, pm.character_bibles)
+    style_data = resolve_style_data(style, pm)
+    if style_data:
+        prompt = style_data["prompt"].replace("{prompt}", prompt)
+    if director and director != "None":
+        effective = director
+        if director == "Custom":
+            effective = pm.load_project_settings().get("custom_director", "")
+        if effective:
+            prompt += f". This video was directed by {effective}."
+    return row, row_index, prompt
+
+
+def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, director=None, generation_mode="LTX-Native", camera_motion="none", use_llm_image_prompt=False, caching_mode="Use cached prompt", vocal_chain_mode=False, zimage_backend="LTX Desktop", lora_path=None, h3_prompt_cache_mode="Reuse cached H3 prompts", h3_prepared=None, h3_comfyui_url=None):
     reuse_first_frame = (caching_mode == "Use cached image")
     skip_prompt_cache = (caching_mode == "Regenerate both on each render")
     row_idx = pm.df.index[pm.df['Shot_ID'].astype(str).str.upper() == str(shot_id).upper()].tolist()
@@ -618,6 +670,9 @@ def generate_video_for_shot(shot_id, resolution, vocal_mode, pm, style=None, dir
             caching_mode=caching_mode,
             use_llm_image_prompt=use_llm_image_prompt,
             vocal_mode=vocal_mode,
+            h3_prompt_cache_mode=h3_prompt_cache_mode,
+            prepared=h3_prepared,
+            comfyui_url=h3_comfyui_url,
         )
         return
 

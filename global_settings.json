@@ -1,5 +1,5 @@
 {
-    "last_llm": "qwen3.6-27b-uncensored-hauhaucs-aggressive",
+    "last_llm": "gemma-4-26b-a4b-it-qat-uncensored-heretic",
     "ltx_base_url": "http://127.0.0.1:8189",
     "lm_studio_url": "http://192.168.2.192:1234",
     "video_backend": "MiniMax H3",
@@ -10,7 +10,7 @@
     "comfyui_url": "http://127.0.0.1:8188",
     "h3_comfyui_url": "http://127.0.0.1:8189",
     "lm_studio_api_token": "sk-lm-FEm6iR6o:2Sup4Z4EF5eYrH74xGN3",
-    "lm_studio_model": "qwen3.6-27b-uncensored-hauhaucs-aggressive",
+    "lm_studio_model": "gemma-4-26b-a4b-it-qat-uncensored-heretic",
     "concepts_vocals_template": "Create a music video via AI video prompts for the following song (see song lyrics below).  See the attached CSV formatted shot list with durations and frame counts. Every shot in this video is a vocal/performance shot. Create detailed, visually compelling prompts for each shot that combine performance elements with creative visual storytelling aligned to the song's themes. Do not include any guns in the story as the LTX video model censors them.  Do not use any words in your descriptions like, painted, sketched, or drawn to prevent the video model from creating animated shots.  Return the shot list in CSV format with just the \"Shot_ID\", \"Type\" and \"Video_Prompt\" columns.  Do NOT include any other text in your reply.  Enclose the video prompt column in \"\" to prevent any commas inside the video prompt from corrupting the data.\n\nFollow the ltx prompt guide below to create each prompt. Give each recurring character a unique first name and refer to them ONLY by that first name throughout \u2014 do NOT describe their physical appearance in the prompts. A separate character bible will inject visual descriptions automatically to keep characters consistent.\n\nEstablish the shot. Use cinematography terms that match your preferred film genre. Include aspects like scale or specific category characteristics to further refine the style you're looking for.\n\nSet the scene. Describe lighting conditions, color palette, surface textures, and atmosphere to shape the mood.\n\nDescribe the action. Write the core action as a natural sequence, flowing from beginning to end.\n\nReference your character(s) by their assigned first name. Do not describe their physical appearance in the prompt.\n\nIdentify camera movement(s). Specify when the view should shift and how. Including how subjects or objects appear after the camera motion gives the model a better idea of how to finish the motion.\n\nKeep your prompt in a single flowing paragraph to give the model a cohesive scene to work with.\nUse present tense verbs to describe movement and action.\nMatch your detail to the shot scale. Closeups need more precise detail than wide shots.\nWhen describing camera movement, focus on the camera's relationship to the subject.\nYou should expect to write 4 to 8 descriptive sentences to cover all the key aspects of the prompt.\n\nSong Lyrics:\n{lyrics}\n\nUser suggested plot concept:\n{plot}\n\nSinger/Band/Venue Description:\n{performance_desc}\n\nShot list:\n{shot_list}",
     "first_frame_reuse_mode": "Use cached prompt",
     "vocal_chain_mode": false,
@@ -22,7 +22,7 @@
     "last_lora": "None",
     "zimage_backend": "ComfyUI",
     "shot_mode": "Random",
-    "vocal_prompt_mode": "Use Singer/Band Description",
+    "vocal_prompt_mode": "Use Storyboard Prompt",
     "plot_user_template_scripted": "Rough Concept: {concept}\n\nTask: Write a cohesive linear plot summary for this short narrative film (max 300 words). Focus on character arcs, settings, and dramatic moments.",
     "h3_custom_height": 9,
     "perf_sys_prompt_music": "You are a casting director and set designer.",
@@ -48,5 +48,13 @@
     "last_versions": 1,
     "h3_custom_width": 16,
     "perf_sys_prompt_scripted": "You are a casting director and set designer for short films.",
-    "h3_aspect": "9:16 - Social"
+    "h3_aspect": "16:9 - Landscape",
+    "power_limit_mode": "wattage_cap",
+    "power_watts_5090": 450,
+    "power_watts_4090": 350,
+    "power_watts_3090": 280,
+    "render_queue_mode": "Pipelined",
+    "llm_concurrency": 4,
+    "h3_coop_enabled": true,
+    "h3_coop_min_available_commit_gb": 84.0
 }

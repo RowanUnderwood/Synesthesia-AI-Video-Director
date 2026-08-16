@@ -8,6 +8,7 @@ project, and only patches documented inputs.
 from __future__ import annotations
 
 import copy
+import contextlib
 import hashlib
 import json
 import math
@@ -31,6 +32,7 @@ H3_MIN_FRAMES = 5
 H3_FRAME_STEP = 17
 H3_MAX_FRAMES = 362
 H3_MAX_CHARACTERS_PER_REF2V_SHOT = 4  # one target frame + two identity references each = nine images
+H3_PROMPT_CACHE_LIMIT = 500
 
 KREA_WORKFLOW = "krea2_native_workflow_Jakes version for silly hat.json"
 H3_FL2_WORKFLOW = "DasiwaMinimaxH3WorkflowsT2VA_cMMH3V10_jakes version_API.json"
@@ -413,7 +415,17 @@ def patch_h3_fl2(image_name: str, prompt: str, duration_seconds: float, filename
                      "timeline_data": json.dumps(timeline, ensure_ascii=False, separators=(",", ":"))})
     _patch_resolution(workflow, aspect, quality, custom_width, custom_height)
     workflow["1512:2600"]["inputs"]["noise_seed"] = int(seed if seed is not None else uuid.uuid4().int % 10**15)
-    workflow["2568"]["inputs"].update({"filename_prefix": filename_prefix, "save_output": True})
+    workflow["2568"]["inputs"].update({
+        "filename_prefix": filename_prefix,
+        "save_output": True,
+        # Auto currently prefers AV1/WebM. Some NVIDIA AV1 files produced by
+        # this node omit a software-decodable sequence header, which makes
+        # MoviePy 1.x block while opening the first frame during assembly.
+        "codec": "H.264",
+        "container": "MP4",
+        "bit_depth": "8-bit",
+        "audio_codec": "AAC",
+    })
     return workflow
 
 
@@ -438,7 +450,14 @@ def patch_h3_ref2(image_names: list[str], prompt: str, duration_seconds: float, 
                      "timeline_data": json.dumps(timeline, ensure_ascii=False, separators=(",", ":"))})
     _patch_resolution(workflow, aspect, quality, custom_width, custom_height)
     workflow["1512:2600"]["inputs"]["noise_seed"] = int(seed if seed is not None else uuid.uuid4().int % 10**15)
-    workflow["2568"]["inputs"].update({"filename_prefix": filename_prefix, "save_output": True})
+    workflow["2568"]["inputs"].update({
+        "filename_prefix": filename_prefix,
+        "save_output": True,
+        "codec": "H.264",
+        "container": "MP4",
+        "bit_depth": "8-bit",
+        "audio_codec": "AAC",
+    })
     return workflow
 
 
@@ -505,11 +524,15 @@ def h3_reference_gallery(pm):
     return gallery
 
 
-def _run_image_workflow(client: ComfyClient, workflow: dict, pm, job_id: str, destination: Path) -> str:
+def _run_image_workflow(client: ComfyClient, workflow: dict, pm, job_id: str,
+                        destination: Path, stop_check=None) -> str:
     client_id = uuid.uuid4().hex
     prompt_id = client.submit(workflow, client_id)
     _record_job(pm, job_id, workflow, {"prompt_id": prompt_id, "workflow": "Krea 2"})
-    descriptor = _wait_for_output(client, prompt_id, ["5"], {".png", ".jpg", ".jpeg", ".webp"}, timeout=900)
+    descriptor = _wait_for_output(
+        client, prompt_id, ["5"], {".png", ".jpg", ".jpeg", ".webp"},
+        timeout=900, stop_check=stop_check,
+    )
     return client.download(descriptor, destination)
 
 
@@ -563,12 +586,12 @@ def _h3_prompt_cache_key(mode: str, prompt: str, duration: float, labels: list[s
 
 
 def rewrite_h3_prompt(pm, source_prompt: str, duration: float, mode: str, labels: list[str],
-                      llm_model: str) -> str:
+                      llm_model: str, llm_bridge=None, use_cache: bool = True) -> str:
     """Rewrite an existing storyboard prompt into the H3 contract and cache it per project."""
     key = _h3_prompt_cache_key(mode, source_prompt, duration, labels)
     settings = pm.load_project_settings()
     cache = settings.get("h3_prompt_cache", {})
-    if isinstance(cache, dict) and cache.get(key):
+    if use_cache and isinstance(cache, dict) and cache.get(key):
         return str(cache[key])
     if mode == "LIPSYNC_TARGET":
         system = (
@@ -624,12 +647,21 @@ def rewrite_h3_prompt(pm, source_prompt: str, duration: float, mode: str, labels
         f"{contract}\nDuration: {duration:.3f} seconds\nReference labels:\n{label_text}\n\n"
         f"Storyboard prompt to rewrite:\n{source_prompt}"
     )
-    rewritten = LLMBridge().query(system, user, llm_model, temperature=0.3)
+    rewritten = (llm_bridge or LLMBridge()).query(system, user, llm_model, temperature=0.3)
     if not rewritten or rewritten.startswith("Error"):
         raise ComfyError(f"H3 prompt rewrite failed: {rewritten}")
-    cache = cache if isinstance(cache, dict) else {}
-    cache[key] = rewritten
-    pm.save_project_settings({"h3_prompt_cache": cache})
+    # Multiple pipeline prompt workers may finish together. Reload and merge
+    # under the project queue lock so one cache write cannot erase another.
+    with getattr(pm, "queue_lock", contextlib.nullcontext()):
+        latest = pm.load_project_settings().get("h3_prompt_cache", {})
+        latest = dict(latest) if isinstance(latest, dict) else {}
+        # Reinsert refreshed keys at the end so insertion order acts as a
+        # lightweight LRU for the bounded per-project cache.
+        latest.pop(key, None)
+        latest[key] = rewritten
+        while len(latest) > H3_PROMPT_CACHE_LIMIT:
+            latest.pop(next(iter(latest)))
+        pm.save_project_settings({"h3_prompt_cache": latest})
     return rewritten
 
 
@@ -667,27 +699,34 @@ def _clean_cell(value) -> str:
     return "" if text.lower() == "nan" else text
 
 
-def _generate_h3_target_frame(shot_id, row, row_index: int, pm, source_prompt: str,
-                              generation_mode: str, caching_mode: str, aspect: str,
-                              custom_width: int, custom_height: int,
-                              use_llm_image_prompt: bool,
-                              prompt_purpose: str = "h3_action_target"):
-    """Yield progress plus a final ``(path, {prompt: ...})`` record."""
+def resolve_h3_target_prompt(shot_id, row, row_index: int, pm, source_prompt: str,
+                             caching_mode: str, use_llm_image_prompt: bool,
+                             prompt_purpose: str = "h3_action_target",
+                             settings_override: dict | None = None,
+                             llm_bridge=None, llm_model: str | None = None) -> tuple[str, str]:
+    """Resolve/cache only the target-image text, without touching ComfyUI.
+
+    Keeping this separate lets the pipelined queue run several LM Studio prompt
+    conversions concurrently while a single 4090 worker owns image generation.
+    The second tuple item is an optional cache-invalidation notice.
+    """
     skip_prompt_cache = caching_mode == "Regenerate both on each render"
     first_frame_prompt = "" if skip_prompt_cache else _clean_cell(row.get("First_Frame_Prompt", ""))
     source_hash = hashlib.sha256(source_prompt.encode("utf-8")).hexdigest()
     cached_purpose = _clean_cell(row.get("First_Frame_Prompt_Purpose", ""))
     cached_source_hash = _clean_cell(row.get("First_Frame_Prompt_Source_Hash", ""))
-    prompt_cache_mismatch = bool(
+    mismatch = bool(
         first_frame_prompt and cached_purpose and cached_purpose != "manual"
         and (cached_purpose != prompt_purpose or cached_source_hash != source_hash)
     )
+    settings = settings_override if settings_override is not None else pm.load_project_settings()
     if (first_frame_prompt and not cached_purpose and prompt_purpose == "h3_vocal_storyboard"
             and first_frame_prompt == _clean_cell(
-                pm.load_project_settings().get("zimage_vocal_first_frame_prompt", "")
+                settings.get("zimage_vocal_first_frame_prompt", "")
             )):
-        prompt_cache_mismatch = True
-    if prompt_cache_mismatch:
+        mismatch = True
+    notice = ""
+    if mismatch:
         first_frame_prompt = ""
         with pm.queue_lock:
             for column in ("First_Frame_Prompt", "First_Frame_Prompt_Purpose",
@@ -695,12 +734,13 @@ def _generate_h3_target_frame(shot_id, row, row_index: int, pm, source_prompt: s
                 if column in pm.df.columns:
                     pm.df.at[row_index, column] = ""
             pm.save_data()
-        yield None, "♻️ Cached first-frame prompt belonged to a different source or purpose; regenerating..."
+        notice = "Cached first-frame prompt belonged to a different source or purpose; regenerated."
     if not first_frame_prompt:
         if use_llm_image_prompt:
-            yield None, "🧠 Creating the setting/target-frame prompt..."
             from video import convert_prompt_for_zimage
-            first_frame_prompt = convert_prompt_for_zimage(source_prompt, pm, pm.load_project_settings())
+            first_frame_prompt = convert_prompt_for_zimage(
+                source_prompt, pm, settings, llm=llm_bridge, llm_model=llm_model,
+            )
             if not skip_prompt_cache:
                 with pm.queue_lock:
                     pm.df.at[row_index, "First_Frame_Prompt"] = first_frame_prompt
@@ -711,6 +751,113 @@ def _generate_h3_target_frame(shot_id, row, row_index: int, pm, source_prompt: s
                     pm.save_data()
         else:
             first_frame_prompt = source_prompt
+    return first_frame_prompt, notice
+
+
+def h3_prompt_spec(shot_id, row, pm, source_prompt: str, vocal_mode: str,
+                   settings_override: dict | None = None) -> dict:
+    """Return validated H3 reference labels and rewrite mode for one shot."""
+    timeline_frames = int(row.get("Total_Frames", round(float(row["Duration"]) * H3_FPS)))
+    render_frames = h3_render_frames(timeline_frames)
+    duration = render_frames / H3_FPS
+    settings = settings_override if settings_override is not None else pm.load_project_settings()
+    if str(row.get("Type", "")) == "Vocal":
+        lead = str(settings.get("h3_lead_character", "")).strip()
+        if not lead:
+            raise ComfyError("Select the H3 lead singer in Tab 2 before generating lip-sync shots.")
+        face, body = h3_reference_paths(pm, lead)
+        if not face or not body:
+            raise ComfyError(f"Missing face/body reference images for {lead}. Generate them in Tab 2 first.")
+        target = vocal_mode == "Use Storyboard Prompt"
+        if target:
+            labels = [
+                "<Picture 1>: concrete target first frame and setting/composition anchor for this vocal shot",
+                f"<Picture 2>: close face identity reference for {lead}",
+                f"<Picture 3>: full-body wardrobe reference for {lead}",
+            ]
+            mode = "LIPSYNC_TARGET"
+        else:
+            labels = [f"<Picture 1>: close face identity reference for {lead}",
+                      f"<Picture 2>: full-body wardrobe reference for {lead}"]
+            mode = "LIPSYNC_IDENTITY"
+        return {"mode": mode, "labels": labels, "requires_target": target,
+                "render_frames": render_frames, "duration": duration,
+                "lead": lead, "face": face, "body": body}
+
+    characters = _shot_character_names(row, pm)
+    if len(characters) > H3_MAX_CHARACTERS_PER_REF2V_SHOT:
+        raise ComfyError(
+            f"{shot_id} names {len(characters)} bible characters; H3 Ref2VA supports at most "
+            f"{H3_MAX_CHARACTERS_PER_REF2V_SHOT}."
+        )
+    labels = ["<Picture 1>: concrete target first frame and setting/composition anchor for this shot"]
+    reference_paths = []
+    for index, name in enumerate(characters, start=1):
+        face, body = h3_reference_paths(pm, name)
+        if not face or not body:
+            raise ComfyError(f"Missing face/body reference images for {name}. Generate them in Tab 2 first.")
+        reference_paths.extend([face, body])
+        labels.extend([f"<Picture {2 * index}>: face identity reference for {name}",
+                       f"<Picture {2 * index + 1}>: full-body wardrobe reference for {name}"])
+    return {"mode": "REF2VA" if characters else "FL2VA", "labels": labels,
+            "requires_target": True, "render_frames": render_frames, "duration": duration,
+            "characters": characters, "reference_paths": reference_paths}
+
+
+def prepare_h3_rewrite(shot_id, row, pm, source_prompt: str, vocal_mode: str,
+                       settings_override: dict | None = None,
+                       llm_model: str | None = None, llm_bridge=None) -> tuple[dict, str]:
+    spec = h3_prompt_spec(
+        shot_id, row, pm, source_prompt, vocal_mode, settings_override=settings_override
+    )
+    settings = settings_override if settings_override is not None else pm.load_project_settings()
+    use_cache = settings.get("h3_prompt_cache_mode", "Reuse cached H3 prompts") == "Reuse cached H3 prompts"
+    prompt = rewrite_h3_prompt(
+        pm, source_prompt, spec["duration"], spec["mode"], spec["labels"],
+        llm_model or config.LM_STUDIO_MODEL, llm_bridge=llm_bridge, use_cache=use_cache,
+    )
+    return spec, prompt
+
+
+def generate_prepared_h3_target_frame(shot_id, row, row_index: int, pm,
+                                      image_prompt: str, generation_mode: str,
+                                      stop_check=None,
+                                      settings_override: dict | None = None) -> str:
+    """Generate one job-owned target frame after its prompt stage has completed."""
+    settings = settings_override if settings_override is not None else pm.load_project_settings()
+    frame = None
+    for frame_path, _update in _generate_h3_target_frame(
+        shot_id, row, row_index, pm, image_prompt, generation_mode,
+        "Regenerate both on each render", settings.get("h3_aspect", "3:4 - Photo"),
+        int(settings.get("h3_custom_width", 16)), int(settings.get("h3_custom_height", 9)),
+        False, stop_check=stop_check,
+    ):
+        if frame_path:
+            frame = frame_path
+    if not frame:
+        raise ComfyError("The H3 target-frame generator returned no image.")
+    return frame
+
+
+def _generate_h3_target_frame(shot_id, row, row_index: int, pm, source_prompt: str,
+                              generation_mode: str, caching_mode: str, aspect: str,
+                              custom_width: int, custom_height: int,
+                              use_llm_image_prompt: bool,
+                              prompt_purpose: str = "h3_action_target",
+                              stop_check=None):
+    """Yield progress plus a final ``(path, {prompt: ...})`` record."""
+    had_cached_prompt = (
+        caching_mode != "Regenerate both on each render"
+        and bool(_clean_cell(row.get("First_Frame_Prompt", "")))
+    )
+    if use_llm_image_prompt and not had_cached_prompt:
+        yield None, "🧠 Creating the setting/target-frame prompt..."
+    first_frame_prompt, cache_notice = resolve_h3_target_prompt(
+        shot_id, row, row_index, pm, source_prompt, caching_mode,
+        use_llm_image_prompt, prompt_purpose,
+    )
+    if cache_notice:
+        yield None, f"♻️ {cache_notice}"
 
     mode = generation_mode if generation_mode in ("Krea 2 First Frame", "Z-Image First Frame") else "Krea 2 First Frame"
     generator_name = "Krea 2" if mode == "Krea 2 First Frame" else "Z-Image (ComfyUI)"
@@ -755,6 +902,7 @@ def _generate_h3_target_frame(shot_id, row, row_index: int, pm, source_prompt: s
             ),
             pm, f"{_safe_slug(shot_id)}_{token}_frame",
             frame_dir / f"{_safe_slug(shot_id)}_h3_first_frame_{token}.png",
+            stop_check=stop_check,
         )
     else:
         from video import generate_comfyui_zimage_first_frame
@@ -762,7 +910,8 @@ def _generate_h3_target_frame(shot_id, row, row_index: int, pm, source_prompt: s
         yield None, f"🖼️ Generating ComfyUI Z-Image setting frame ({width}×{height})..."
         first_frame, error = None, None
         for update in generate_comfyui_zimage_first_frame(
-            first_frame_prompt, f"{_safe_slug(shot_id)}_{token}", pm, width=width, height=height
+            first_frame_prompt, f"{_safe_slug(shot_id)}_{token}", pm,
+            width=width, height=height, stop_check=stop_check,
         ):
             if isinstance(update, tuple):
                 first_frame, error = update
@@ -785,20 +934,25 @@ def generate_h3_video_for_shot(shot_id, row, row_index: int, pm, source_prompt: 
                                generation_mode="Krea 2 First Frame",
                                caching_mode="Use cached prompt",
                                use_llm_image_prompt=False,
-                               vocal_mode="Use Singer/Band Description"):
+                               vocal_mode="Use Singer/Band Description",
+                               h3_prompt_cache_mode="Reuse cached H3 prompts",
+                               prepared: dict | None = None,
+                               comfyui_url: str | None = None):
     """Generator matching video.generate_video_for_shot's (path, status) protocol."""
     try:
         timeline_frames = int(row.get("Total_Frames", round(float(row["Duration"]) * H3_FPS)))
         render_frames = h3_render_frames(timeline_frames)
         render_duration = render_frames / H3_FPS
-        settings = pm.load_project_settings()
+        prepared = prepared or {}
+        settings = prepared["settings"] if "settings" in prepared else pm.load_project_settings()
         aspect = settings.get("h3_aspect", "3:4 - Photo")
         quality = settings.get("h3_quality", "0.65 MP - Balanced")
         custom_width = int(settings.get("h3_custom_width", 16))
         custom_height = int(settings.get("h3_custom_height", 9))
         llm_model = config.LM_STUDIO_MODEL
+        use_h3_prompt_cache = h3_prompt_cache_mode == "Reuse cached H3 prompts"
         job_id = f"{_safe_slug(shot_id)}_{uuid.uuid4().hex[:8]}"
-        client = ComfyClient(config.H3_COMFYUI_URL)
+        client = ComfyClient(comfyui_url or config.H3_COMFYUI_URL)
         output_dir = Path(pm.get_path("videos"))
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -810,9 +964,9 @@ def generate_h3_video_for_shot(shot_id, row, row_index: int, pm, source_prompt: 
             if not face or not body:
                 raise ComfyError(f"Missing face/body reference images for {lead}. Generate them in Tab 2 first.")
 
-            target_frame = None
+            target_frame = prepared.get("target_frame")
             use_storyboard_target = vocal_mode == "Use Storyboard Prompt"
-            if use_storyboard_target:
+            if use_storyboard_target and not target_frame:
                 for frame_path, update in _generate_h3_target_frame(
                     shot_id, row, row_index, pm, source_prompt, generation_mode, caching_mode,
                     aspect, custom_width, custom_height, use_llm_image_prompt,
@@ -834,8 +988,13 @@ def generate_h3_video_for_shot(shot_id, row, row_index: int, pm, source_prompt: 
                 labels = [f"<Picture 1>: close face identity reference for {lead}",
                           f"<Picture 2>: full-body wardrobe reference for {lead}"]
                 rewrite_mode = "LIPSYNC_IDENTITY"
-            yield None, "🧠 Rewriting H3 lip-sync prompt..."
-            prompt = rewrite_h3_prompt(pm, source_prompt, render_duration, rewrite_mode, labels, llm_model)
+            prompt = prepared.get("h3_prompt")
+            if not prompt:
+                yield None, "🧠 Rewriting H3 lip-sync prompt..."
+                prompt = rewrite_h3_prompt(
+                    pm, source_prompt, render_duration, rewrite_mode, labels, llm_model,
+                    use_cache=use_h3_prompt_cache,
+                )
             yield None, "🎙️ Preparing frame-accurate H3 vocal audio..."
             audio_path = _h3_audio_chunk(pm, row, render_frames, shot_id)
             yield None, (
@@ -855,16 +1014,18 @@ def generate_h3_video_for_shot(shot_id, row, row_index: int, pm, source_prompt: 
             preferred = ["2402"] if settings.get("h3_lipsync_output", "RTX Upscaled") == "RTX Upscaled" else ["2293"]
             kind = "H3 lip-sync"
         else:
-            target_frame, target_prompt = None, None
-            for frame_path, update in _generate_h3_target_frame(
-                shot_id, row, row_index, pm, source_prompt, generation_mode, caching_mode,
-                aspect, custom_width, custom_height, use_llm_image_prompt,
-            ):
-                if frame_path:
-                    target_frame = frame_path
-                    target_prompt = update["prompt"]
-                else:
-                    yield None, update
+            target_frame = prepared.get("target_frame")
+            target_prompt = prepared.get("target_prompt")
+            if not target_frame:
+                for frame_path, update in _generate_h3_target_frame(
+                    shot_id, row, row_index, pm, source_prompt, generation_mode, caching_mode,
+                    aspect, custom_width, custom_height, use_llm_image_prompt,
+                ):
+                    if frame_path:
+                        target_frame = frame_path
+                        target_prompt = update["prompt"]
+                    else:
+                        yield None, update
             if not target_frame:
                 raise ComfyError("The H3 target frame generator returned no image.")
 
@@ -886,8 +1047,13 @@ def generate_h3_video_for_shot(shot_id, row, row_index: int, pm, source_prompt: 
                     local_paths.extend([face, body])
                     labels.extend([f"<Picture {2 * index}>: face identity reference for {name}",
                                    f"<Picture {2 * index + 1}>: full-body wardrobe reference for {name}"])
-                yield None, "🧠 Rewriting H3 Ref2VA prompt..."
-                prompt = rewrite_h3_prompt(pm, source_prompt, render_duration, "REF2VA", labels, llm_model)
+                prompt = prepared.get("h3_prompt")
+                if not prompt:
+                    yield None, "🧠 Rewriting H3 Ref2VA prompt..."
+                    prompt = rewrite_h3_prompt(
+                        pm, source_prompt, render_duration, "REF2VA", labels, llm_model,
+                        use_cache=use_h3_prompt_cache,
+                    )
                 yield None, "⬆️ Uploading target frame and character references to H3 ComfyUI..."
                 image_names = [client.upload_input(path, job_id) for path in local_paths]
                 workflow = patch_h3_ref2(image_names, prompt, render_duration,
@@ -895,8 +1061,13 @@ def generate_h3_video_for_shot(shot_id, row, row_index: int, pm, source_prompt: 
                 preferred, kind = ["2568"], "H3 Ref2VA"
             else:
                 labels = ["<Picture 1>: the supplied starting frame"]
-                yield None, "🧠 Rewriting H3 FL2VA prompt..."
-                prompt = rewrite_h3_prompt(pm, source_prompt, render_duration, "FL2VA", labels, llm_model)
+                prompt = prepared.get("h3_prompt")
+                if not prompt:
+                    yield None, "🧠 Rewriting H3 FL2VA prompt..."
+                    prompt = rewrite_h3_prompt(
+                        pm, source_prompt, render_duration, "FL2VA", labels, llm_model,
+                        use_cache=use_h3_prompt_cache,
+                    )
                 yield None, "⬆️ Uploading target first frame to H3 ComfyUI..."
                 image_name = client.upload_input(target_frame, job_id)
                 workflow = patch_h3_fl2(image_name, prompt, render_duration,

@@ -1,5 +1,7 @@
 import os
+import queue
 import shutil
+import threading
 import time
 
 import gradio as gr
@@ -53,8 +55,14 @@ def build(pm_state, shared_shot_state, current_proj_var, shot_table, song_up, vi
         with gr.Row():
             assemble_btn = gr.Button("🔢 Assemble with Shot Numbers", variant="secondary")
             assemble_current_btn = gr.Button("Assemble videos with black fallback", variant="primary")
+        assembly_progress = gr.Slider(
+            minimum=0, maximum=100, value=0, step=1,
+            label="Assembly Progress", interactive=False,
+        )
         final_video_out = gr.Video(label="Final Cut")
-        assembly_status = gr.Textbox(label="Assembly Status", interactive=False)
+        assembly_status = gr.Textbox(
+            label="Assembly Status", interactive=False, lines=1, max_lines=1,
+        )
 
         gr.Markdown("---")
         gr.Markdown("### 🗂️ Cutting Room Floor Compilation")
@@ -316,37 +324,136 @@ def build(pm_state, shared_shot_state, current_proj_var, shot_table, song_up, vi
 
     renders_gallery.select(on_render_gallery_select, inputs=[renders_state], outputs=[render_playback, render_select_dropdown])
 
-    def assemble_and_refresh(song_file, resolution, style_filter, pm, fallback_mode):
-        result = assemble_video(get_file_path(song_file), resolution, pm, fallback_mode=fallback_mode, style_filter=style_filter)
+    _assembly_outputs = [
+        final_video_out, assembly_status, renders_gallery, renders_state,
+        render_select_dropdown, assembly_progress,
+    ]
+
+    def _run_assembly_task(task, pm, select_result=False):
+        if getattr(pm, "assembly_running", False):
+            yield (
+                gr.update(), "⚠️ An assembly is already running.", gr.update(), gr.update(),
+                gr.update(), gr.update(),
+            )
+            return
+
+        events = queue.Queue(maxsize=8)
+        state = {"result": None, "error": None}
+        started = time.monotonic()
+        last_activity = started
+        latest_fraction = 0.0
+        latest_message = "Starting assembly worker..."
+
+        def report(fraction, message):
+            event = (float(fraction), str(message), time.monotonic())
+            try:
+                events.put_nowait(event)
+            except queue.Full:
+                try:
+                    events.get_nowait()
+                except queue.Empty:
+                    pass
+                events.put_nowait(event)
+
+        def worker():
+            try:
+                state["result"] = task(report)
+            except Exception as exc:
+                state["error"] = exc
+            finally:
+                pm.assembly_running = False
+
+        pm.assembly_running = True
+        thread = threading.Thread(target=worker, name="synesthesia-assembly", daemon=True)
+        thread.start()
+        while thread.is_alive() or not events.empty():
+            try:
+                latest_fraction, latest_message, last_activity = events.get(timeout=0.75)
+                while True:
+                    latest_fraction, latest_message, last_activity = events.get_nowait()
+            except queue.Empty:
+                pass
+
+            now = time.monotonic()
+            elapsed = now - started
+            idle = now - last_activity
+            heartbeat = ""
+            if idle >= 10:
+                heartbeat = (
+                    f" | ⚠️ No new progress update for {idle:.0f}s; the assembly worker is still running."
+                )
+            status = (
+                f"{latest_message} | Progress: {latest_fraction * 100:.1f}% | Elapsed: {elapsed:.0f}s | "
+                f"Last activity: {idle:.1f}s ago{heartbeat}"
+            )
+            yield (
+                gr.update(), status, gr.update(), gr.update(), gr.update(),
+                round(latest_fraction * 100),
+            )
+
+        elapsed = time.monotonic() - started
         gallery_data, render_paths = get_project_renders(pm)
-        render_choices = [os.path.basename(p) for p in render_paths]
-        if result and os.path.exists(str(result)):
-            return result, "", gallery_data, render_paths, gr.update(choices=render_choices, value=None)
+        render_choices = [os.path.basename(path) for path in render_paths]
+        result = state["result"]
+        if state["error"] is not None:
+            status = f"❌ Assembly failed after {elapsed:.0f}s: {state['error']}"
+            result_path = None
+            progress_value = round(latest_fraction * 100)
+            selected = None
+        elif result and os.path.exists(str(result)):
+            status = f"✅ Assembly complete in {elapsed:.0f}s: {os.path.basename(str(result))}"
+            result_path = result
+            progress_value = 100
+            selected = os.path.basename(str(result)) if select_result else None
         else:
-            return None, str(result), gallery_data, render_paths, gr.update(choices=render_choices, value=None)
+            status = f"❌ Assembly stopped after {elapsed:.0f}s: {result}"
+            result_path = None
+            progress_value = round(latest_fraction * 100)
+            selected = None
+        yield (
+            result_path, status, gallery_data, render_paths,
+            gr.update(choices=render_choices, value=selected), progress_value,
+        )
+
+    def assemble_and_refresh(song_file, resolution, style_filter, pm):
+        song_path = get_file_path(song_file)
+        task = lambda report: assemble_video(
+            song_path, resolution, pm, fallback_mode=True, style_filter=style_filter,
+            progress_callback=report,
+        )
+        yield from _run_assembly_task(task, pm)
 
     def assemble_numbered_and_refresh(song_file, resolution, style_filter, pm):
-        result = assemble_video_with_shot_numbers(get_file_path(song_file), resolution, pm, style_filter=style_filter)
-        gallery_data, render_paths = get_project_renders(pm)
-        render_choices = [os.path.basename(p) for p in render_paths]
-        if result and os.path.exists(str(result)):
-            return result, "", gallery_data, render_paths, gr.update(choices=render_choices, value=None)
-        else:
-            return None, str(result), gallery_data, render_paths, gr.update(choices=render_choices, value=None)
+        song_path = get_file_path(song_file)
+        task = lambda report: assemble_video_with_shot_numbers(
+            song_path, resolution, pm, style_filter=style_filter,
+            progress_callback=report,
+        )
+        yield from _run_assembly_task(task, pm)
 
-    assemble_btn.click(assemble_numbered_and_refresh, inputs=[song_up, vid_resolution_dropdown, vid_style_filter_dropdown, pm_state], outputs=[final_video_out, assembly_status, renders_gallery, renders_state, render_select_dropdown])
-    assemble_current_btn.click(lambda s, res, sf, pm: assemble_and_refresh(s, res, sf, pm, True), inputs=[song_up, vid_resolution_dropdown, vid_style_filter_dropdown, pm_state], outputs=[final_video_out, assembly_status, renders_gallery, renders_state, render_select_dropdown])
+    assemble_btn.click(
+        assemble_numbered_and_refresh,
+        inputs=[song_up, vid_resolution_dropdown, vid_style_filter_dropdown, pm_state],
+        outputs=_assembly_outputs, show_progress="hidden",
+    )
+    assemble_current_btn.click(
+        assemble_and_refresh,
+        inputs=[song_up, vid_resolution_dropdown, vid_style_filter_dropdown, pm_state],
+        outputs=_assembly_outputs, show_progress="hidden",
+    )
 
     def assemble_crf_and_refresh(song_file, resolution, audio_mode, pm):
-        result = assemble_cutting_room_floor(get_file_path(song_file), resolution, pm, audio_mode=audio_mode)
-        gallery_data, render_paths = get_project_renders(pm)
-        render_choices = [os.path.basename(p) for p in render_paths]
-        if result and os.path.exists(str(result)):
-            return result, "", gallery_data, render_paths, gr.update(choices=render_choices, value=os.path.basename(result))
-        else:
-            return None, str(result), gallery_data, render_paths, gr.update(choices=render_choices, value=None)
+        song_path = get_file_path(song_file)
+        task = lambda report: assemble_cutting_room_floor(
+            song_path, resolution, pm, audio_mode=audio_mode, progress_callback=report,
+        )
+        yield from _run_assembly_task(task, pm, select_result=True)
 
-    assemble_crf_btn.click(assemble_crf_and_refresh, inputs=[song_up, vid_resolution_dropdown, crf_audio_dropdown, pm_state], outputs=[final_video_out, assembly_status, renders_gallery, renders_state, render_select_dropdown])
+    assemble_crf_btn.click(
+        assemble_crf_and_refresh,
+        inputs=[song_up, vid_resolution_dropdown, crf_audio_dropdown, pm_state],
+        outputs=_assembly_outputs, show_progress="hidden",
+    )
 
     return {
         "tab4_ui": tab4_ui,

@@ -17,6 +17,14 @@ H3_COMFYUI_URL = "http://127.0.0.1:8189"  # MiniMax H3 video ComfyUI (RTX 5090)
 ELECTRICITY_COST = 0.1805  # USD per kWh (default 18.05¢)
 SYSTEM_WATTAGE = 600.0     # Watts, full system draw during generation (default: RTX 5090 system)
 GPU_MONITOR_INDEX = 0      # pynvml device index to monitor for VRAM usage
+POWER_LIMIT_MODE = "no_limit"  # "no_limit" | "wattage_cap"
+POWER_WATTS_5090 = 450
+POWER_WATTS_4090 = 350
+POWER_WATTS_3090 = 280
+RENDER_QUEUE_MODE = "Legacy"  # "Legacy" | "Pipelined"
+LLM_CONCURRENCY = 4
+H3_COOP_ENABLED = False
+H3_COOP_MIN_AVAILABLE_COMMIT_GB = 84.0
 VRAM_WARN_THRESHOLD = 0.92 # Warn if dedicated VRAM usage > 92%
 SLOWDOWN_WARN_FACTOR = 2.5 # Warn if actual render took > 2.5x estimated time
 
@@ -475,6 +483,7 @@ GLOBALIZABLE_KEYS = frozenset({
     "min_silence", "silence_thresh", "shot_mode", "min_dur", "max_dur", "video_mode",
     # Video generation preferences
     "firstframe_mode", "llm_image_prompt_mode", "first_frame_reuse_mode",
+    "h3_prompt_cache_mode",
     "vocal_prompt_mode", "vocal_chain_mode", "last_resolution", "last_versions",
     "last_camera_motion", "last_director", "last_style",
     "zimage_backend", "last_lora", "h3_aspect", "h3_quality", "h3_lipsync_output",
@@ -506,6 +515,7 @@ _CODE_DEFAULTS = {
     "firstframe_mode": "LTX-Native",
     "llm_image_prompt_mode": "Use video prompt as-is",
     "first_frame_reuse_mode": "Use cached prompt",
+    "h3_prompt_cache_mode": "Reuse cached H3 prompts",
     "vocal_prompt_mode": "Use Singer/Band Description",
     "vocal_chain_mode": False,
     "last_resolution": "1080p",
@@ -538,6 +548,8 @@ def save_global_llm(model_id):
 
 def load_global_url_settings():
     global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, LM_STUDIO_API_TOKEN, LM_STUDIO_MODEL, VIDEO_BACKEND, COMFYUI_URL, H3_COMFYUI_URL, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
+    global POWER_LIMIT_MODE, POWER_WATTS_5090, POWER_WATTS_4090, POWER_WATTS_3090
+    global RENDER_QUEUE_MODE, LLM_CONCURRENCY, H3_COOP_ENABLED, H3_COOP_MIN_AVAILABLE_COMMIT_GB
     try:
         if os.path.exists(GLOBAL_SETTINGS_FILE):
             with open(GLOBAL_SETTINGS_FILE, "r") as f:
@@ -553,12 +565,28 @@ def load_global_url_settings():
                 ELECTRICITY_COST = float(data.get("electricity_cost", ELECTRICITY_COST))
                 SYSTEM_WATTAGE = float(data.get("system_wattage", SYSTEM_WATTAGE))
                 GPU_MONITOR_INDEX = int(data.get("gpu_monitor_index", GPU_MONITOR_INDEX))
+                POWER_LIMIT_MODE = data.get("power_limit_mode", POWER_LIMIT_MODE)
+                if POWER_LIMIT_MODE not in ("no_limit", "wattage_cap"):
+                    POWER_LIMIT_MODE = "no_limit"
+                POWER_WATTS_5090 = int(data.get("power_watts_5090", POWER_WATTS_5090))
+                POWER_WATTS_4090 = int(data.get("power_watts_4090", POWER_WATTS_4090))
+                POWER_WATTS_3090 = int(data.get("power_watts_3090", POWER_WATTS_3090))
+                RENDER_QUEUE_MODE = data.get("render_queue_mode", RENDER_QUEUE_MODE)
+                if RENDER_QUEUE_MODE not in ("Legacy", "Pipelined"):
+                    RENDER_QUEUE_MODE = "Legacy"
+                LLM_CONCURRENCY = max(1, min(4, int(data.get("llm_concurrency", LLM_CONCURRENCY))))
+                H3_COOP_ENABLED = bool(data.get("h3_coop_enabled", H3_COOP_ENABLED))
+                H3_COOP_MIN_AVAILABLE_COMMIT_GB = max(
+                    8.0, float(data.get("h3_coop_min_available_commit_gb", H3_COOP_MIN_AVAILABLE_COMMIT_GB))
+                )
     except:
         pass
 
 def save_global_url_settings(settings: dict):
     """Accept a settings dict and persist all global settings to disk."""
     global LTX_BASE_URL, LTX_AUTH_TOKEN, LM_STUDIO_URL, LM_STUDIO_API_TOKEN, LM_STUDIO_MODEL, VIDEO_BACKEND, COMFYUI_URL, H3_COMFYUI_URL, ELECTRICITY_COST, SYSTEM_WATTAGE, GPU_MONITOR_INDEX
+    global POWER_LIMIT_MODE, POWER_WATTS_5090, POWER_WATTS_4090, POWER_WATTS_3090
+    global RENDER_QUEUE_MODE, LLM_CONCURRENCY, H3_COOP_ENABLED, H3_COOP_MIN_AVAILABLE_COMMIT_GB
     LTX_BASE_URL = str(settings.get("ltx_base_url", LTX_BASE_URL)).strip()
     LTX_AUTH_TOKEN = str(settings.get("ltx_auth_token", LTX_AUTH_TOKEN)).strip()
     LM_STUDIO_URL = str(settings.get("lm_studio_url", LM_STUDIO_URL)).strip()
@@ -571,6 +599,26 @@ def save_global_url_settings(settings: dict):
     SYSTEM_WATTAGE = float(settings.get("system_wattage", SYSTEM_WATTAGE))
     raw_gpu = settings.get("gpu_monitor_index", GPU_MONITOR_INDEX)
     GPU_MONITOR_INDEX = int(str(raw_gpu).split(" — ")[0]) if raw_gpu is not None else 0
+    POWER_LIMIT_MODE = settings.get("power_limit_mode", POWER_LIMIT_MODE)
+    if POWER_LIMIT_MODE not in ("no_limit", "wattage_cap"):
+        POWER_LIMIT_MODE = "no_limit"
+    try:
+        from gpu_power import clamp_watts
+        POWER_WATTS_5090 = clamp_watts("5090", settings.get("power_watts_5090", POWER_WATTS_5090))
+        POWER_WATTS_4090 = clamp_watts("4090", settings.get("power_watts_4090", POWER_WATTS_4090))
+        POWER_WATTS_3090 = clamp_watts("3090", settings.get("power_watts_3090", POWER_WATTS_3090))
+    except Exception:
+        POWER_WATTS_5090 = int(settings.get("power_watts_5090", POWER_WATTS_5090))
+        POWER_WATTS_4090 = int(settings.get("power_watts_4090", POWER_WATTS_4090))
+        POWER_WATTS_3090 = int(settings.get("power_watts_3090", POWER_WATTS_3090))
+    RENDER_QUEUE_MODE = settings.get("render_queue_mode", RENDER_QUEUE_MODE)
+    if RENDER_QUEUE_MODE not in ("Legacy", "Pipelined"):
+        RENDER_QUEUE_MODE = "Legacy"
+    LLM_CONCURRENCY = max(1, min(4, int(settings.get("llm_concurrency", LLM_CONCURRENCY))))
+    H3_COOP_ENABLED = bool(settings.get("h3_coop_enabled", H3_COOP_ENABLED))
+    H3_COOP_MIN_AVAILABLE_COMMIT_GB = max(
+        8.0, float(settings.get("h3_coop_min_available_commit_gb", H3_COOP_MIN_AVAILABLE_COMMIT_GB))
+    )
     try:
         data = {}
         if os.path.exists(GLOBAL_SETTINGS_FILE):
@@ -590,6 +638,14 @@ def save_global_url_settings(settings: dict):
             "electricity_cost": ELECTRICITY_COST,
             "system_wattage": SYSTEM_WATTAGE,
             "gpu_monitor_index": GPU_MONITOR_INDEX,
+            "power_limit_mode": POWER_LIMIT_MODE,
+            "power_watts_5090": POWER_WATTS_5090,
+            "power_watts_4090": POWER_WATTS_4090,
+            "power_watts_3090": POWER_WATTS_3090,
+            "render_queue_mode": RENDER_QUEUE_MODE,
+            "llm_concurrency": LLM_CONCURRENCY,
+            "h3_coop_enabled": H3_COOP_ENABLED,
+            "h3_coop_min_available_commit_gb": H3_COOP_MIN_AVAILABLE_COMMIT_GB,
         })
         for key in GLOBALIZABLE_KEYS:
             if key in settings:
@@ -599,6 +655,20 @@ def save_global_url_settings(settings: dict):
         return "✅ Settings saved and applied."
     except Exception as e:
         return f"❌ Error saving settings: {e}"
+
+
+def get_machine_settings() -> dict:
+    """Return hardware/service settings that are global-only, never project data."""
+    return {
+        "power_limit_mode": POWER_LIMIT_MODE,
+        "power_watts_5090": POWER_WATTS_5090,
+        "power_watts_4090": POWER_WATTS_4090,
+        "power_watts_3090": POWER_WATTS_3090,
+        "render_queue_mode": RENDER_QUEUE_MODE,
+        "llm_concurrency": LLM_CONCURRENCY,
+        "h3_coop_enabled": H3_COOP_ENABLED,
+        "h3_coop_min_available_commit_gb": H3_COOP_MIN_AVAILABLE_COMMIT_GB,
+    }
 
 
 def get_global_defaults() -> dict:

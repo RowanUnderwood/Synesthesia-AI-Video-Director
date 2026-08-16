@@ -1,5 +1,6 @@
 import os
 import sys
+import atexit
 
 # Compatibility shim: Pillow 10.0+ removed PIL.Image.ANTIALIAS (replaced by LANCZOS),
 # but moviepy 1.x still references it internally during clip.resize().
@@ -25,10 +26,32 @@ if sys.platform.lower() == "win32" or os.name.lower() == "nt":
         pass
 
 import keyboard
+import config
+import gpu_power
 from ui import build_app
 from utils import restart_application
 
+_gpu_power_restored = False
+
+
+def _restore_gpu_power_on_exit():
+    global _gpu_power_restored
+    if _gpu_power_restored:
+        return
+    _gpu_power_restored = True
+    try:
+        if gpu_power.is_capped() and gpu_power.helper_installed():
+            _ok, message = gpu_power.restore_defaults()
+            print(f"[GPU shutdown] {message}")
+    except Exception as exc:
+        print(f"[GPU shutdown] Could not restore stock limits: {exc}")
+
+
 if __name__ == "__main__":
+    startup_power_message = gpu_power.reconcile_on_start(config.get_machine_settings())
+    if startup_power_message:
+        print(startup_power_message)
+    atexit.register(_restore_gpu_power_on_exit)
     app = build_app()
     try:
         keyboard.add_hotkey('ctrl+r', restart_application)
@@ -37,4 +60,7 @@ if __name__ == "__main__":
         print(f"⚠️ Could not register hotkey 'ctrl+r'. Run script as admin or ensure 'keyboard' module is installed. Error: {e}")
 
     app.queue()
-    app.launch(allowed_paths=[os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects")])
+    try:
+        app.launch(allowed_paths=[os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects")])
+    finally:
+        _restore_gpu_power_on_exit()

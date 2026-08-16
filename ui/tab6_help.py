@@ -10,7 +10,7 @@ def build():
             <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 50px !important;width: 181px !important;" >
         </a>
         """)
-        gr.Markdown("""
+        gr.Markdown(r"""
 # Synesthesia AI Video Director — User Guide
 
 This application helps you create AI-generated music videos by combining audio analysis, LLM-generated video prompts, and the LTX Desktop video generation engine.
@@ -96,7 +96,9 @@ Set **First Frame Mode**:
 
 All of these preferences — mode, versions, resolution, style, director, first-frame mode, Z-Image sub-settings, vocal prompt mode, and camera motion — are **saved per-project automatically** and restored when you reload the project.
 
-Click *Start Batch Generation* to begin. Use **⏸ Pause Queue** to pause between shots, **✖ Cancel All** to clear the remaining queue, or **⏹ Stop** to halt after the current shot finishes.
+Click *Start Batch Generation* to begin. Use **⏸ Pause Queue** to stop new stage claims, **🧹 Cancel Pending** to remove queued jobs while active work finishes, or **⏹ Stop Active & Clear** to cancel Synesthesia-owned H3 jobs and clear the queue.
+
+When **Pipelined** queue mode is selected in Tab 5, MiniMax H3 work is split into first-frame prompt, image, H3 prompt, and video stages. Up to four LM Studio calls may overlap, but only one first-frame job owns the 4090 at a time. The optional H3 co-op waits until every image and prompt stage is drained, unloads the image and LM Studio models, verifies Windows system commit, and only then lends the 4090 to a second video worker. Other backends continue to use the legacy queue during rollout.
 
 **Vocal Shot Prompt Mode** controls which prompt drives video generation for Vocal shots:
 - *Use Singer/Band Description* — uses the performer/venue description from Tab 2
@@ -213,6 +215,14 @@ Configure the endpoints used by the application:
 - **LLM API URL** — the base URL for the local LLM backend. Supports **LM Studio** (default: `http://127.0.0.1:1234/v1`) and **llama.cpp** `llama-server.exe` (default: `http://127.0.0.1:8080/v1`). When using llama-server, start it with at least **32K context** (`--ctx-size 32768`) for projects with large shot lists.
 
 Click *Save Settings* to apply immediately and refresh the model list. These API settings are stored globally in `global_settings.json` and apply to all projects.
+
+### GPU Power Limits
+
+Choose **No limit** for stock NVIDIA power limits or **Wattage cap** to apply the saved 5090, 4090, and 3090 caps. Registering the helper requires one UAC prompt; routine apply/restore operations then run through the protected on-demand SYSTEM task while Synesthesia remains unelevated. The helper validates GPU identity by model name and clamps every value against the legal range reported by `nvidia-smi`.
+
+### Render Queue and H3 Co-op
+
+**Legacy** preserves the previous sequential queue. **Pipelined** enables staged MiniMax H3 processing and uses the configurable shared LM Studio concurrency limit. The experimental 4090 co-op is disabled by default; when enabled, it still refuses to start if H3 nodes are unavailable on the image instance, LM Studio cannot be safely unloaded, upstream work remains, or available system commit is below the configured threshold. On the 128 GB host, the default 84 GB available-commit requirement reflects the measured size of a second H3 pipeline and intentionally favors avoiding pagefile exhaustion over engaging co-op.
 
 ### Two-Tier Settings Model
 

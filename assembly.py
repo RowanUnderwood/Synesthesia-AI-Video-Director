@@ -1,15 +1,141 @@
 import os
 import glob
+import hashlib
+import subprocess
+import time
 
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 from moviepy.editor import VideoFileClip, AudioFileClip, ColorClip, ImageClip, CompositeVideoClip, concatenate_videoclips
+from proglog import ProgressBarLogger
+import imageio_ffmpeg
 
 import config
 from utils import format_time
 
 _CPU_THREADS = os.cpu_count() or 1
+
+
+def _report_progress(callback, fraction, message):
+    if callback is None:
+        return
+    try:
+        callback(max(0.0, min(1.0, float(fraction))), str(message))
+    except Exception:
+        # Progress reporting must never be able to abort an encode.
+        pass
+
+
+class AssemblyProgressLogger(ProgressBarLogger):
+    """Translate MoviePy/FFmpeg audio and frame bars into assembly progress."""
+
+    def __init__(self, callback):
+        super().__init__(logged_bars=False, min_time_interval=0.25)
+        self.progress_callback = callback
+        self.started_at = time.time()
+
+    def bars_callback(self, bar, attr, value, old_value=None):
+        if attr != "index":
+            return
+        state = self.bars.get(bar, {})
+        total = state.get("total")
+        if not total:
+            return
+        current = max(0, min(int(value), int(total)))
+        ratio = current / max(1, int(total))
+        elapsed = time.time() - self.started_at
+        if bar == "chunk":
+            fraction = 0.38 + 0.07 * ratio
+            message = f"Encoding audio: chunk {current}/{int(total)} ({ratio:.0%}) — {elapsed:.0f}s"
+        elif bar == "t":
+            fraction = 0.45 + 0.54 * ratio
+            message = f"Encoding video: frame {current}/{int(total)} ({ratio:.0%}) — {elapsed:.0f}s"
+        else:
+            return
+        _report_progress(self.progress_callback, fraction, message)
+
+
+def prepare_assembly_clip(path, pm, progress_callback=None, fraction=0.03,
+                          label="clip", timeout=60):
+    """Return a MoviePy-safe path, caching H.264 MP4 proxies for legacy WebMs.
+
+    MiniMax's enhanced video-combine node previously selected AV1/WebM in Auto
+    mode. Some of those files require NVIDIA's AV1 decoder and make MoviePy's
+    default software reader wait forever for a first frame. Originals are never
+    changed; a project-local proxy is atomically created and reused.
+    """
+    source = os.path.abspath(str(path))
+    if os.path.splitext(source)[1].lower() != ".webm":
+        return source
+    if not os.path.isfile(source):
+        raise FileNotFoundError(source)
+
+    cache_dir = pm.get_path("assembly_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    source_id = hashlib.sha256(os.path.normcase(source).encode("utf-8")).hexdigest()[:12]
+    stem = os.path.splitext(os.path.basename(source))[0]
+    target = os.path.join(cache_dir, f"{stem}_{source_id}_h264.mp4")
+    if (os.path.isfile(target) and os.path.getsize(target) > 1024
+            and os.path.getmtime(target) >= os.path.getmtime(source)):
+        _report_progress(progress_callback, fraction, f"Using cached H.264 proxy for {label}...")
+        return target
+
+    _report_progress(progress_callback, fraction, f"Converting legacy WebM for {label} to H.264 MP4...")
+    temp_target = target + ".part.mp4"
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    attempts = [
+        ("av1_cuvid", "h264_nvenc", ["-preset", "p4", "-cq", "18"]),
+        (None, "h264_nvenc", ["-preset", "p4", "-cq", "18"]),
+        (None, "libx264", ["-preset", "veryfast", "-crf", "18"]),
+    ]
+    errors = []
+    for decoder, encoder, encoder_options in attempts:
+        try:
+            if os.path.exists(temp_target):
+                os.remove(temp_target)
+            command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
+            if decoder:
+                command.extend(["-c:v", decoder])
+            command.extend([
+                "-i", source,
+                "-map", "0:v:0", "-map", "0:a?",
+                "-c:v", encoder, *encoder_options,
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart",
+                temp_target,
+            ])
+            completed = subprocess.run(
+                command, capture_output=True, text=True, timeout=timeout,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if completed.returncode == 0 and os.path.isfile(temp_target) and os.path.getsize(temp_target) > 1024:
+                os.replace(temp_target, target)
+                _report_progress(progress_callback, fraction, f"H.264 proxy ready for {label}.")
+                return target
+            detail = (completed.stderr or completed.stdout or "unknown FFmpeg error").strip()
+            errors.append(f"{decoder or 'auto'}/{encoder}: {detail[-500:]}")
+        except subprocess.TimeoutExpired:
+            errors.append(f"{decoder or 'auto'}/{encoder}: timed out after {timeout}s")
+        except OSError as exc:
+            errors.append(f"{decoder or 'auto'}/{encoder}: {exc}")
+        _report_progress(
+            progress_callback, fraction,
+            f"Proxy attempt failed for {label}; trying the next decoder/encoder...",
+        )
+
+    if os.path.exists(temp_target):
+        try:
+            os.remove(temp_target)
+        except OSError:
+            pass
+    message = (
+        f"Could not create an assembly proxy for {os.path.basename(source)}. "
+        + " | ".join(errors)
+    )
+    _report_progress(progress_callback, fraction, f"Proxy conversion failed for {label}: {message}")
+    raise RuntimeError(message)
 
 def _project_slug(pm):
     """Return a filename-safe lowercase slug from the project name."""
@@ -57,11 +183,13 @@ def _render_cost_str(pm, fallback_resolution="1080p", generation_mode="LTX-Nativ
 # LOGIC: VIDEO ASSEMBLY
 # ==========================================
 
-def assemble_video(full_song_path, resolution, pm, fallback_mode=False, style_filter=None):
+def assemble_video(full_song_path, resolution, pm, fallback_mode=False, style_filter=None,
+                   progress_callback=None):
     df = pm.df
     clips = []
     clips_to_close = []
     if df.empty: return "No shots to assemble."
+    _report_progress(progress_callback, 0.01, "Reading timeline and locating active clips...")
 
     df = df.sort_values(by="Start_Time")
     expected_cursor = 0.0
@@ -93,18 +221,27 @@ def assemble_video(full_song_path, resolution, pm, fallback_mode=False, style_fi
         if vp and pd.notna(vp) and os.path.exists(str(vp)):
             probe = None
             try:
-                probe = VideoFileClip(str(vp))
+                probe_path = prepare_assembly_clip(
+                    vp, pm, progress_callback, 0.03,
+                    f"resolution probe {r.get('Shot_ID', '?')}",
+                )
+                probe = VideoFileClip(probe_path)
                 target_size = tuple(probe.size)
                 break
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"Assembly resolution probe skipped {vp}: {exc}")
             finally:
                 if probe is not None:
                     probe.close()
     if target_size is None:
         target_size = config.RESOLUTION_MAP.get(resolution, (1920, 1080))
 
-    for index, row in df.iterrows():
+    total_shots = len(df)
+    for seq_num, (index, row) in enumerate(df.iterrows(), start=1):
+        _report_progress(
+            progress_callback, 0.05 + 0.30 * (seq_num / max(1, total_shots)),
+            f"Preparing clip {seq_num}/{total_shots}: {row.get('Shot_ID', '?')}",
+        )
         vid_path = pick_vid_path(row)
         dur = float(row['Duration'])
         start_time = float(row['Start_Time'])
@@ -124,7 +261,12 @@ def assemble_video(full_song_path, resolution, pm, fallback_mode=False, style_fi
 
         if vid_path and pd.notna(vid_path) and os.path.exists(str(vid_path)):
             try:
-                clip = VideoFileClip(str(vid_path)).without_audio().set_fps(24)
+                prepared_path = prepare_assembly_clip(
+                    vid_path, pm, progress_callback,
+                    0.05 + 0.30 * (seq_num / max(1, total_shots)),
+                    str(row.get('Shot_ID', '?')),
+                )
+                clip = VideoFileClip(prepared_path).without_audio().set_fps(24)
 
                 if clip.duration > snapped_dur:
                     clip = clip.subclip(0, snapped_dur)
@@ -159,6 +301,7 @@ def assemble_video(full_song_path, resolution, pm, fallback_mode=False, style_fi
 
     if audio_path and os.path.exists(audio_path):
         try:
+            _report_progress(progress_callback, 0.37, "Attaching the project audio track...")
             audio = AudioFileClip(audio_path)
             if audio.duration > final.duration: audio = audio.subclip(0, final.duration)
             final = final.set_audio(audio)
@@ -177,11 +320,13 @@ def assemble_video(full_song_path, resolution, pm, fallback_mode=False, style_fi
     out_path = os.path.join(pm.get_path("renders"), f"{slug}_final_cut{style_part}{cost_part}_{time_str}.mp4")
 
     try:
+        _report_progress(progress_callback, 0.42, "Starting FFmpeg video encode...")
         final.write_videofile(
             out_path, fps=24, codec='libx264', audio_codec='aac',
             temp_audiofile=os.path.join(pm.get_path("renders"), "temp_audio.m4a"),
             remove_temp=True, threads=_CPU_THREADS,
-            ffmpeg_params=["-pix_fmt", "yuv420p", "-ar", "44100"]
+            ffmpeg_params=["-pix_fmt", "yuv420p", "-ar", "44100"],
+            logger=AssemblyProgressLogger(progress_callback),
         )
     finally:
         final.close()
@@ -192,6 +337,7 @@ def assemble_video(full_song_path, resolution, pm, fallback_mode=False, style_fi
             try: c.close()
             except Exception: pass
 
+    _report_progress(progress_callback, 1.0, "Assembly complete.")
     return out_path
 
 def _make_shot_label_clip(shot_id, seq_num, total_shots, size, duration, fps=24):
@@ -225,11 +371,13 @@ def _make_shot_label_clip(shot_id, seq_num, total_shots, size, duration, fps=24)
     return label.set_mask(mask)
 
 
-def assemble_video_with_shot_numbers(full_song_path, resolution, pm, style_filter=None):
+def assemble_video_with_shot_numbers(full_song_path, resolution, pm, style_filter=None,
+                                     progress_callback=None):
     df = pm.df
     clips = []
     clips_to_close = []
     if df.empty: return "No shots to assemble."
+    _report_progress(progress_callback, 0.01, "Reading timeline and locating clips for numbered review...")
 
     df = df.sort_values(by="Start_Time")
     expected_cursor = 0.0
@@ -258,11 +406,15 @@ def assemble_video_with_shot_numbers(full_song_path, resolution, pm, style_filte
         if vp and pd.notna(vp) and os.path.exists(str(vp)):
             probe = None
             try:
-                probe = VideoFileClip(str(vp))
+                probe_path = prepare_assembly_clip(
+                    vp, pm, progress_callback, 0.03,
+                    f"resolution probe {r.get('Shot_ID', '?')}",
+                )
+                probe = VideoFileClip(probe_path)
                 target_size = tuple(probe.size)
                 break
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"Numbered assembly resolution probe skipped {vp}: {exc}")
             finally:
                 if probe is not None:
                     probe.close()
@@ -273,6 +425,11 @@ def assemble_video_with_shot_numbers(full_song_path, resolution, pm, style_filte
     seq_num = 0
 
     for index, row in df.iterrows():
+        seq_num += 1
+        _report_progress(
+            progress_callback, 0.05 + 0.30 * (seq_num / max(1, total_shots)),
+            f"Preparing numbered clip {seq_num}/{total_shots}: {row.get('Shot_ID', '?')}",
+        )
         vid_path = pick_vid_path(row)
         dur = float(row['Duration'])
         start_time = float(row['Start_Time'])
@@ -290,7 +447,12 @@ def assemble_video_with_shot_numbers(full_song_path, resolution, pm, style_filte
 
         if vid_path and pd.notna(vid_path) and os.path.exists(str(vid_path)):
             try:
-                clip = VideoFileClip(str(vid_path)).without_audio().set_fps(24)
+                prepared_path = prepare_assembly_clip(
+                    vid_path, pm, progress_callback,
+                    0.05 + 0.30 * (seq_num / max(1, total_shots)),
+                    str(row.get('Shot_ID', '?')),
+                )
+                clip = VideoFileClip(prepared_path).without_audio().set_fps(24)
                 if clip.duration > snapped_dur:
                     clip = clip.subclip(0, snapped_dur)
                 clip = clip.set_duration(snapped_dur)
@@ -302,7 +464,6 @@ def assemble_video_with_shot_numbers(full_song_path, resolution, pm, style_filte
         if clip is None:
             clip = ColorClip(size=target_size, color=(0,0,0), duration=snapped_dur).set_fps(24)
 
-        seq_num += 1
         label = _make_shot_label_clip(row["Shot_ID"], seq_num, total_shots, target_size, clip.duration)
         clip = CompositeVideoClip([clip, label])
 
@@ -320,6 +481,7 @@ def assemble_video_with_shot_numbers(full_song_path, resolution, pm, style_filte
 
     if audio_path and os.path.exists(audio_path):
         try:
+            _report_progress(progress_callback, 0.37, "Attaching the project audio track...")
             audio = AudioFileClip(audio_path)
             if audio.duration > final.duration: audio = audio.subclip(0, final.duration)
             final = final.set_audio(audio)
@@ -332,11 +494,13 @@ def assemble_video_with_shot_numbers(full_song_path, resolution, pm, style_filte
     out_path = os.path.join(pm.get_path("renders"), f"{slug}_shot_review{cost_part}_{time_str}.mp4")
 
     try:
+        _report_progress(progress_callback, 0.42, "Starting FFmpeg numbered-review encode...")
         final.write_videofile(
             out_path, fps=24, codec='libx264', audio_codec='aac',
             temp_audiofile=os.path.join(pm.get_path("renders"), "temp_audio.m4a"),
             remove_temp=True, threads=_CPU_THREADS,
-            ffmpeg_params=["-pix_fmt", "yuv420p", "-ar", "44100"]
+            ffmpeg_params=["-pix_fmt", "yuv420p", "-ar", "44100"],
+            logger=AssemblyProgressLogger(progress_callback),
         )
     finally:
         final.close()
@@ -347,10 +511,12 @@ def assemble_video_with_shot_numbers(full_song_path, resolution, pm, style_filte
             try: c.close()
             except Exception: pass
 
+    _report_progress(progress_callback, 1.0, "Numbered review assembly complete.")
     return out_path
 
 
-def assemble_cutting_room_floor(full_song_path, resolution, pm, audio_mode="Attach Full Song (Once)"):
+def assemble_cutting_room_floor(full_song_path, resolution, pm, audio_mode="Attach Full Song (Once)",
+                                progress_callback=None):
     """Assemble all versions (cutting_room + active videos) into a single chronological showreel."""
     vid_dir = pm.get_path("videos")
     cut_dir = pm.get_path("cutting_room")
@@ -358,10 +524,12 @@ def assemble_cutting_room_floor(full_song_path, resolution, pm, audio_mode="Atta
     all_files = []
     for d in [vid_dir, cut_dir]:
         if os.path.exists(d):
-            all_files.extend(glob.glob(os.path.join(d, "*.mp4")))
+            for extension in ("*.mp4", "*.webm", "*.mov", "*.mkv"):
+                all_files.extend(glob.glob(os.path.join(d, extension)))
 
     if not all_files:
         return "No videos found in videos or cutting_room directories."
+    _report_progress(progress_callback, 0.01, "Locating active and cutting-room clips...")
 
     def sort_key(filepath):
         shot_id = os.path.basename(filepath).split("_")[0].upper()
@@ -373,11 +541,15 @@ def assemble_cutting_room_floor(full_song_path, resolution, pm, audio_mode="Atta
     for f in all_files:
         probe = None
         try:
-            probe = VideoFileClip(f)
+            probe_path = prepare_assembly_clip(
+                f, pm, progress_callback, 0.03,
+                f"resolution probe {os.path.basename(f)}",
+            )
+            probe = VideoFileClip(probe_path)
             target_size = tuple(probe.size)
             break
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"Cutting-room resolution probe skipped {f}: {exc}")
         finally:
             if probe is not None:
                 probe.close()
@@ -386,12 +558,21 @@ def assemble_cutting_room_floor(full_song_path, resolution, pm, audio_mode="Atta
 
     clips = []
     clips_to_close = []
-    for f in all_files:
+    for seq_num, f in enumerate(all_files, start=1):
+        _report_progress(
+            progress_callback, 0.05 + 0.30 * (seq_num / max(1, len(all_files))),
+            f"Preparing cutting-room clip {seq_num}/{len(all_files)}: {os.path.basename(f)}",
+        )
         try:
+            prepared_path = prepare_assembly_clip(
+                f, pm, progress_callback,
+                0.05 + 0.30 * (seq_num / max(1, len(all_files))),
+                os.path.basename(f),
+            )
             if audio_mode == "Use LTX Clip Audio":
-                clip = VideoFileClip(f).set_fps(24)
+                clip = VideoFileClip(prepared_path).set_fps(24)
             else:
-                clip = VideoFileClip(f).without_audio().set_fps(24)
+                clip = VideoFileClip(prepared_path).without_audio().set_fps(24)
             if tuple(clip.size) != target_size:
                 clip = clip.resize(newsize=target_size)
             clips.append(clip)
@@ -411,6 +592,7 @@ def assemble_cutting_room_floor(full_song_path, resolution, pm, audio_mode="Atta
     audio = None
     if audio_mode != "Use LTX Clip Audio" and audio_path and os.path.exists(audio_path):
         try:
+            _report_progress(progress_callback, 0.37, "Preparing cutting-room audio track...")
             audio = AudioFileClip(audio_path)
             if audio_mode == "Loop Full Song" and audio.duration < final.duration:
                 loops = int(final.duration / audio.duration) + 2
@@ -438,11 +620,13 @@ def assemble_cutting_room_floor(full_song_path, resolution, pm, audio_mode="Atta
     out_path = os.path.join(pm.get_path("renders"), f"{slug}_cutting_room_floor{cost_part}_{time_str}.mp4")
 
     try:
+        _report_progress(progress_callback, 0.42, "Starting FFmpeg cutting-room encode...")
         final.write_videofile(
             out_path, fps=24, codec='libx264', audio_codec='aac',
             temp_audiofile=os.path.join(pm.get_path("renders"), "temp_audio_crf.m4a"),
             remove_temp=True, threads=_CPU_THREADS,
-            ffmpeg_params=["-pix_fmt", "yuv420p", "-ar", "44100"]
+            ffmpeg_params=["-pix_fmt", "yuv420p", "-ar", "44100"],
+            logger=AssemblyProgressLogger(progress_callback),
         )
     finally:
         final.close()
@@ -453,4 +637,5 @@ def assemble_cutting_room_floor(full_song_path, resolution, pm, audio_mode="Atta
             try: c.close()
             except Exception: pass
 
+    _report_progress(progress_callback, 1.0, "Cutting-room assembly complete.")
     return out_path

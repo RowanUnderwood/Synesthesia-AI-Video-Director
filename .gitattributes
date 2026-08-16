@@ -1,5 +1,6 @@
 # Default: auto-detect text files and normalize to LF in the repo
 * text=auto
+.gitattributes text eol=lf
 
 # Cross-platform source files — always LF
 *.py    text eol=lf
@@ -10,6 +11,7 @@
 
 # Windows-only scripts — always CRLF
 *.bat   text eol=crlf
+*.ps1   text eol=crlf
 
 # Binary files — no line ending conversion
 *.png   binary

@@ -77,6 +77,14 @@ class ExternalLLMExportTests(unittest.TestCase):
                 instructions = archive.read("external_llm_instructions.txt").decode("utf-8")
                 self.assertIn("Include the lead singer in character_bibles.csv", instructions)
                 self.assertIn("Matched 1 of 2 lyric lines", instructions)
+                self.assertIn("change a Vocal shot's Type to Action", instructions)
+                self.assertIn("Never change an Action shot to Vocal", instructions)
+                self.assertIn("speech-to-text (STT) model", instructions)
+                self.assertIn("derived from the volume of the isolated vocal track", instructions)
+                self.assertIn("at most four named, visually tracked", instructions)
+                self.assertIn("lead singer counts as one of those four", instructions)
+                self.assertIn("fills all nine reference-image slots", instructions)
+                self.assertIn("Use untracked people only as background", instructions)
 
     def test_export_rejects_missing_timeline(self):
         with tempfile.TemporaryDirectory() as root:
@@ -92,6 +100,7 @@ class ExternalLLMExportTests(unittest.TestCase):
                 instructions = archive.read("external_llm_instructions.txt").decode("utf-8")
             self.assertIn("may remain in the separate singer/performance description", instructions)
             self.assertNotIn("H3 requires that Character Bible entry", instructions)
+            self.assertNotIn("fills all nine reference-image slots", instructions)
 
 
 if __name__ == "__main__":

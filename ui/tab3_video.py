@@ -16,6 +16,7 @@ from video import (get_project_videos, delete_video_file, generate_video_for_sho
                    convert_prompt_for_zimage, generate_comfyui_zimage_first_frame,
                    _will_use_chain_conditioning, _has_valid_cached_first_frame)
 from h3 import H3_ASPECT_PRESETS, H3_QUALITY_PRESETS, h3_aspect_cache_key
+from render_pipeline import H3RenderPipeline
 
 
 def build(pm_state, current_proj_var, shared_shot_state):
@@ -92,14 +93,31 @@ def build(pm_state, current_proj_var, shared_shot_state):
         first_frame_reuse_dropdown = gr.Dropdown(
             choices=["Use cached prompt", "Use cached image", "Regenerate both on each render"],
             value="Use cached prompt",
-            label="Caching Mode",
+            label="First Frame Caching Mode",
             visible=False,
             info=(
                 "'Use cached prompt' — reuses the LLM-converted prompt but generates a fresh image each render. "
                 "'Use cached image' — reuses both the cached prompt and the generated image file. "
-                "'Regenerate both on each render' — bypasses all caches; always re-runs LLM conversion and "
-                "image generation without saving results back to CSV."
+                "'Regenerate both on each render' — bypasses the first-frame caches; always re-runs LLM "
+                "conversion and image generation without saving results back to CSV. H3 video-prompt rewrite "
+                "caching is controlled separately below."
             )
+        )
+        with gr.Row(visible=(config.VIDEO_BACKEND == "MiniMax H3")) as h3_prompt_cache_row:
+            h3_prompt_cache_dropdown = gr.Dropdown(
+                choices=["Reuse cached H3 prompts", "Rewrite H3 prompts each render"],
+                value="Reuse cached H3 prompts",
+                label="H3 Prompt Rewrite Cache",
+                info=(
+                    "Controls only the MiniMax H3 video-prompt rewrite. First-frame prompt and image "
+                    "caching remain controlled by Caching Mode above. Fresh rewrites are retained for later reuse."
+                ),
+                scale=4,
+            )
+            clear_h3_prompt_cache_btn = gr.Button("🧹 Clear Cached H3 Prompts", scale=1)
+        h3_prompt_cache_status = gr.Textbox(
+            label="H3 Prompt Cache", interactive=False,
+            visible=(config.VIDEO_BACKEND == "MiniMax H3"),
         )
 
         with gr.Accordion("✏️ Style Editor", open=False):
@@ -117,11 +135,11 @@ def build(pm_state, current_proj_var, shared_shot_state):
 
         with gr.Row():
             queue_pause_btn = gr.Button("⏸ Pause Queue")
-            queue_cancel_btn = gr.Button("✖ Cancel All", variant="stop")
+            queue_cancel_btn = gr.Button("🧹 Cancel Pending")
             vid_gen_start_btn = gr.Button("🎬 Start Batch Generation", variant="primary", scale=2)
-            vid_gen_stop_btn = gr.Button("⏹ Stop", variant="stop", visible=False)
+            vid_gen_stop_btn = gr.Button("⏹ Stop Active & Clear", variant="stop", visible=True)
 
-        vid_gen_status = gr.Textbox(label="Queue Status", interactive=False, lines=5)
+        vid_gen_status = gr.Textbox(label="Queue Status", interactive=False, lines=8)
 
         with gr.Row():
             current_render_progress = gr.Slider(label="Current Render", minimum=0, maximum=100, value=0, interactive=False, step=1)
@@ -548,7 +566,8 @@ def build(pm_state, current_proj_var, shared_shot_state):
 
     # --- Persist Tab 3 preferences to project settings ---
 
-    def auto_save_tab3_prefs(firstframe, llm_img, reuse, zimage_backend, vocal_mode, gen_mode,
+    def auto_save_tab3_prefs(firstframe, llm_img, reuse, h3_prompt_cache_mode,
+                              zimage_backend, vocal_mode, gen_mode,
                               versions, resolution, camera, director, style, vocal_chain, lora, pm):
         if not pm or not pm.current_project:
             return
@@ -556,6 +575,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
             "firstframe_mode": firstframe,
             "llm_image_prompt_mode": llm_img,
             "first_frame_reuse_mode": reuse,
+            "h3_prompt_cache_mode": h3_prompt_cache_mode,
             "zimage_backend": zimage_backend,
             "vocal_prompt_mode": vocal_mode,
             "last_gen_mode": gen_mode,
@@ -570,15 +590,33 @@ def build(pm_state, current_proj_var, shared_shot_state):
 
     _tab3_pref_inputs = [
         vid_firstframe_mode, llm_image_prompt_dropdown, first_frame_reuse_dropdown,
+        h3_prompt_cache_dropdown,
         vid_zimage_backend, vid_vocal_prompt_mode, vid_gen_mode_dropdown, vid_versions_dropdown,
         vid_resolution_dropdown, single_shot_camera_dropdown,
         vid_director_dropdown, vid_style_dropdown, vid_vocal_chain_checkbox, vid_lora_dropdown, pm_state,
     ]
     for _t3_comp in [vid_firstframe_mode, llm_image_prompt_dropdown, first_frame_reuse_dropdown,
+                     h3_prompt_cache_dropdown,
                      vid_zimage_backend, vid_vocal_prompt_mode, vid_gen_mode_dropdown, vid_versions_dropdown,
                      vid_resolution_dropdown, single_shot_camera_dropdown,
                      vid_director_dropdown, vid_style_dropdown, vid_vocal_chain_checkbox, vid_lora_dropdown]:
         _t3_comp.change(auto_save_tab3_prefs, inputs=_tab3_pref_inputs)
+
+    def clear_h3_prompt_cache(pm):
+        if not pm or not pm.current_project:
+            return "❌ Load a project before clearing its H3 prompt cache."
+        if getattr(pm, "queue_processor_running", False):
+            return "⚠️ Stop the active render queue before clearing cached H3 prompts."
+        with getattr(pm, "queue_lock", threading.Lock()):
+            settings = pm.load_project_settings()
+            cache = settings.get("h3_prompt_cache", {})
+            count = len(cache) if isinstance(cache, dict) else 0
+            pm.save_project_settings({"h3_prompt_cache": {}})
+        return f"✅ Cleared {count} cached H3 prompt{'s' if count != 1 else ''}."
+
+    clear_h3_prompt_cache_btn.click(
+        clear_h3_prompt_cache, inputs=[pm_state], outputs=[h3_prompt_cache_status]
+    )
 
     def save_h3_preferences(aspect, quality, lipsync_output, custom_width, custom_height, pm):
         if pm and pm.current_project:
@@ -632,7 +670,12 @@ def build(pm_state, current_proj_var, shared_shot_state):
         return gr.update(choices=choices, value=value), shared_shot
 
     def format_queue_status(pm, current_item=None, current_msg=""):
+        runtime = getattr(pm, "pipeline_runtime", None)
+        if runtime and runtime.is_active():
+            return runtime.status_text()
         lines = []
+        if config.RENDER_QUEUE_MODE == "Pipelined" and config.VIDEO_BACKEND != "MiniMax H3":
+            lines.append("ℹ️ Pipelined staging is MiniMax H3-only; this backend is using the legacy queue.")
         if getattr(pm, 'ltx_ram_warning', ''):
             lines.append(pm.ltx_ram_warning)
         if current_item:
@@ -662,6 +705,60 @@ def build(pm_state, current_proj_var, shared_shot_state):
             lines.append(f"❌ {pm.last_gen_error}")
         return "\n".join(lines)
 
+    def process_pipelined_queue_if_idle(pm, proj):
+        with pm.queue_lock:
+            if pm.queue_processor_running:
+                gal = get_project_videos(pm, proj)
+                runtime = getattr(pm, "pipeline_runtime", None)
+                status = runtime.status_text() if runtime else "🚦 Pipelined queue is already running."
+                yield gal, status, [item[0] for item in gal], 0, 0, "", "", "", "", gr.update(), gr.update(), gr.update()
+                return
+            items = list(pm.render_queue)
+            pm.render_queue.clear()
+            if not items:
+                gal = get_project_videos(pm, proj)
+                yield gal, "💤 Queue is empty.", [item[0] for item in gal], 0, 0, "", "", "", "", gr.update(), gr.update(), gr.update()
+                return
+            pm.queue_processor_running = True
+            pm.stop_video_generation = False
+
+        runtime = H3RenderPipeline(
+            pm, proj, llm_concurrency=config.LLM_CONCURRENCY,
+            coop_enabled=config.H3_COOP_ENABLED,
+            min_available_commit_gb=config.H3_COOP_MIN_AVAILABLE_COMMIT_GB,
+        )
+        pm.pipeline_runtime = runtime
+        runtime.start(items)
+        try:
+            while runtime.is_active():
+                snap = runtime.snapshot()
+                gal = get_project_videos(pm, proj)
+                eta = f"~{format_eta(snap['eta_seconds'])}" if snap["eta_seconds"] is not None else "Learning throughput..."
+                elapsed = max(0.0, time.time() - runtime.started_at)
+                cost = (elapsed / 3600.0) * (config.SYSTEM_WATTAGE / 1000.0) * config.ELECTRICITY_COST
+                active_video = bool(snap["active"]["video"])
+                yield (
+                    gal, runtime.status_text(), [item[0] for item in gal],
+                    50 if active_video else 0, snap["progress"], "" if not active_video else "Rendering...",
+                    eta, f"${cost:.4f}" if active_video else "", f"${cost:.3f}",
+                    gr.update(), gr.update(), gr.update(),
+                )
+                time.sleep(0.5)
+        finally:
+            runtime.thread.join(timeout=2) if runtime.thread else None
+            sync_video_directory(pm)
+            with pm.queue_lock:
+                pm.queue_processor_running = False
+                pm.stop_video_generation = False
+            gal = get_project_videos(pm, proj)
+            snap = runtime.snapshot()
+            final = runtime.status_text()
+            if snap["failed"]:
+                final += f"\n⚠️ Finished with {snap['failed']} failed/cancelled job(s)."
+            else:
+                final += "\n✅ Pipelined queue complete."
+            yield gal, final, [item[0] for item in gal], 0, 100 if snap["total"] else 0, "", "", "", "", gr.update(), gr.update(), gr.update()
+
     def _effective_resolution(shot_id, resolution, df):
         """Downgrade 1080p to 720p for shots longer than 5 seconds.
         LTX Desktop only supports >5s clips at 720p or lower."""
@@ -675,7 +772,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
             pass
         return resolution
 
-    def add_to_render_queue(shot_id, resolution, vocal_mode, style, director, generation_mode, pm, delete_path=None, camera_motion="none", use_llm_image_prompt=False, caching_mode="Use cached prompt", vocal_chain_mode=False, zimage_backend="LTX Desktop", lora_path="None"):
+    def add_to_render_queue(shot_id, resolution, vocal_mode, style, director, generation_mode, pm, delete_path=None, camera_motion="none", use_llm_image_prompt=False, caching_mode="Use cached prompt", h3_prompt_cache_mode="Reuse cached H3 prompts", vocal_chain_mode=False, zimage_backend="LTX Desktop", lora_path="None"):
         if not shot_id:
             return "❌ No shot selected."
         effective_res = _effective_resolution(shot_id, resolution, pm.df)
@@ -684,6 +781,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
                 'delete_path': delete_path, 'camera_motion': camera_motion,
                 'use_llm_image_prompt': use_llm_image_prompt,
                 'caching_mode': caching_mode,
+                'h3_prompt_cache_mode': h3_prompt_cache_mode,
                 'vocal_chain_mode': vocal_chain_mode,
                 'zimage_backend': zimage_backend,
                 'lora_path': lora_path}
@@ -717,6 +815,9 @@ def build(pm_state, current_proj_var, shared_shot_state):
         return est
 
     def process_render_queue_if_idle(pm, proj):
+        if config.RENDER_QUEUE_MODE == "Pipelined" and config.VIDEO_BACKEND == "MiniMax H3":
+            yield from process_pipelined_queue_if_idle(pm, proj)
+            return
         with pm.queue_lock:
             if pm.queue_processor_running or not pm.render_queue:
                 gal = get_project_videos(pm, proj)
@@ -782,6 +883,9 @@ def build(pm_state, current_proj_var, shared_shot_state):
                     camera_motion=current_item.get('camera_motion', 'none'),
                     use_llm_image_prompt=current_item.get('use_llm_image_prompt', False),
                     caching_mode=current_item.get('caching_mode', 'Use cached prompt'),
+                    h3_prompt_cache_mode=current_item.get(
+                        'h3_prompt_cache_mode', 'Reuse cached H3 prompts'
+                    ),
                     vocal_chain_mode=current_item.get('vocal_chain_mode', False),
                     zimage_backend=current_item.get('zimage_backend', 'LTX Desktop'),
                     lora_path=current_item.get('lora_path', 'None'),
@@ -1107,7 +1211,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
             gal = get_project_videos(pm, proj)
             yield gal, "💤 Queue is empty.", [item[0] for item in gal], 0, 0, "", "", "", "", gr.update(), gr.update(), gr.update()
 
-    def batch_enqueue_shots(mode, target_versions, resolution, vocal_mode, style, director, generation_mode, llm_image_prompt_mode, caching_mode, vocal_chain_mode, zimage_backend, lora_path, pm):
+    def batch_enqueue_shots(mode, target_versions, resolution, vocal_mode, style, director, generation_mode, llm_image_prompt_mode, caching_mode, h3_prompt_cache_mode, vocal_chain_mode, zimage_backend, lora_path, pm):
         if pm.current_project:
             csv_path = os.path.join(pm.base_dir, pm.current_project, "shot_list.csv")
             if os.path.exists(csv_path):
@@ -1157,6 +1261,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
                         'delete_path': None, 'camera_motion': 'none',
                         'use_llm_image_prompt': (llm_image_prompt_mode == "Convert with LLM"),
                         'caching_mode': caching_mode,
+                        'h3_prompt_cache_mode': h3_prompt_cache_mode,
                         'vocal_chain_mode': vocal_chain_mode,
                         'zimage_backend': zimage_backend,
                         'lora_path': lora_path}
@@ -1172,14 +1277,16 @@ def build(pm_state, current_proj_var, shared_shot_state):
         return msg + "\n" + format_queue_status(pm), gr.update(value=f"⏳ Queue: {items_added} items")
 
     single_shot_btn.click(
-        lambda shot_id, res, vocal, style, director, gen_mode, cam, llm_img, caching_mode, vocal_chain, zimage_backend, lora, pm:
+        lambda shot_id, res, vocal, style, director, gen_mode, cam, llm_img, caching_mode, h3_cache_mode, vocal_chain, zimage_backend, lora, pm:
             add_to_render_queue(shot_id, res, vocal, style, director, gen_mode, pm,
                                 camera_motion=cam, use_llm_image_prompt=(llm_img == "Convert with LLM"),
-                                caching_mode=caching_mode, vocal_chain_mode=vocal_chain,
+                                caching_mode=caching_mode, h3_prompt_cache_mode=h3_cache_mode,
+                                vocal_chain_mode=vocal_chain,
                                 zimage_backend=zimage_backend, lora_path=lora),
         inputs=[single_shot_dropdown, vid_resolution_dropdown, vid_vocal_prompt_mode,
                 vid_style_dropdown, vid_director_dropdown, vid_firstframe_mode,
                 single_shot_camera_dropdown, llm_image_prompt_dropdown, first_frame_reuse_dropdown,
+                h3_prompt_cache_dropdown,
                 vid_vocal_chain_checkbox, vid_zimage_backend, vid_lora_dropdown, pm_state],
         outputs=[vid_gen_status]
     ).then(
@@ -1194,20 +1301,38 @@ def build(pm_state, current_proj_var, shared_shot_state):
     )
 
     def toggle_queue_pause(pm):
-        pm.queue_paused = not pm.queue_paused
+        runtime = getattr(pm, "pipeline_runtime", None)
+        if runtime and runtime.is_active():
+            pm.queue_paused = not pm.queue_paused
+            runtime.set_paused(pm.queue_paused)
+        else:
+            pm.queue_paused = not pm.queue_paused
         return "▶ Resume Queue" if pm.queue_paused else "⏸ Pause Queue"
 
     queue_pause_btn.click(toggle_queue_pause, inputs=[pm_state], outputs=[queue_pause_btn])
 
-    def cancel_render_queue(pm):
+    def cancel_pending_queue(pm):
+        with pm.queue_lock:
+            count = len(pm.render_queue)
+            pm.render_queue.clear()
+        runtime = getattr(pm, "pipeline_runtime", None)
+        if runtime and runtime.is_active():
+            count += runtime.cancel_pending()
+        return f"🧹 Cancelled {count} pending item(s); active work will finish.", gr.update()
+
+    def stop_render_queue(pm):
         with pm.queue_lock:
             pm.render_queue.clear()
             pm.stop_video_generation = True
             pm.queue_paused = False
-        return "🚫 Cancelling... current render will finish, then queue stops.", "⏸ Pause Queue"
+        runtime = getattr(pm, "pipeline_runtime", None)
+        if runtime and runtime.is_active():
+            runtime.stop()
+            return "⏹ Stopping owned H3 jobs on both ComfyUI instances...", "⏸ Pause Queue"
+        return "🚫 Stopping current render and clearing the queue...", "⏸ Pause Queue"
 
     queue_cancel_btn.click(
-        cancel_render_queue, inputs=[pm_state], outputs=[vid_gen_status, queue_pause_btn]
+        cancel_pending_queue, inputs=[pm_state], outputs=[vid_gen_status, queue_pause_btn]
     ).then(
         lambda: (0, 0, "", "", "", ""),
         outputs=[current_render_progress, queue_progress_bar,
@@ -1219,7 +1344,8 @@ def build(pm_state, current_proj_var, shared_shot_state):
         batch_enqueue_shots,
         inputs=[vid_gen_mode_dropdown, vid_versions_dropdown, vid_resolution_dropdown,
                 vid_vocal_prompt_mode, vid_style_dropdown, vid_director_dropdown, vid_firstframe_mode,
-                llm_image_prompt_dropdown, first_frame_reuse_dropdown, vid_vocal_chain_checkbox,
+                llm_image_prompt_dropdown, first_frame_reuse_dropdown, h3_prompt_cache_dropdown,
+                vid_vocal_chain_checkbox,
                 vid_zimage_backend, vid_lora_dropdown, pm_state],
         outputs=[vid_gen_status, vid_gen_start_btn]
     ).then(
@@ -1237,7 +1363,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
     )
 
     vid_gen_stop_btn.click(
-        cancel_render_queue, inputs=[pm_state], outputs=[vid_gen_status, queue_pause_btn]
+        stop_render_queue, inputs=[pm_state], outputs=[vid_gen_status, queue_pause_btn]
     ).then(
         lambda: (0, 0, "", "", "", ""),
         outputs=[current_render_progress, queue_progress_bar,
@@ -1266,7 +1392,7 @@ def build(pm_state, current_proj_var, shared_shot_state):
 
     del_vid_btn.click(handle_vid_delete, inputs=[selected_vid_path, current_proj_var, pm_state, gallery_paths_state], outputs=[vid_gallery, vid_large_view, selected_vid_path, gallery_paths_state])
 
-    def handle_regen_vid_and_prompt(shot_id_txt, selected_path, resolution, vocal_mode, style, director, generation_mode, llm_image_prompt_mode, caching_mode, vocal_chain_mode, camera_motion, lora_path, proj, pm):
+    def handle_regen_vid_and_prompt(shot_id_txt, selected_path, resolution, vocal_mode, style, director, generation_mode, llm_image_prompt_mode, caching_mode, h3_prompt_cache_mode, vocal_chain_mode, camera_motion, lora_path, proj, pm):
         use_llm_img = (llm_image_prompt_mode == "Convert with LLM")
         if not shot_id_txt:
             yield gr.update(), "❌ No Shot ID selected", gr.update(), 0, 0, "", "", "", "", gr.update(), gr.update(), gr.update()
@@ -1360,7 +1486,9 @@ def build(pm_state, current_proj_var, shared_shot_state):
             add_to_render_queue(shot_id_txt, resolution, vocal_mode, style, director, generation_mode, pm,
                                 delete_path=selected_path, camera_motion=camera_motion,
                                 use_llm_image_prompt=use_llm_img,
-                                caching_mode=caching_mode, vocal_chain_mode=vocal_chain_mode,
+                                caching_mode=caching_mode,
+                                h3_prompt_cache_mode=h3_prompt_cache_mode,
+                                vocal_chain_mode=vocal_chain_mode,
                                 lora_path=lora_path)
             gal = get_project_videos(pm, proj)
             yield gal, f"✅ Prompt saved. Added to queue.\n" + format_queue_status(pm), [item[0] for item in gal], 0, 0, "", "", "", "", gr.update(), gr.update(), new_ffp
@@ -1368,15 +1496,17 @@ def build(pm_state, current_proj_var, shared_shot_state):
             pm.llm_busy = False
 
     regen_vid_same_prompt_btn.click(
-        lambda shot_id, sel_path, res, vocal, style, director, gen_mode, llm_img, caching_mode, vocal_chain, cam, lora, pm:
+        lambda shot_id, sel_path, res, vocal, style, director, gen_mode, llm_img, caching_mode, h3_cache_mode, vocal_chain, cam, lora, pm:
             add_to_render_queue(shot_id, res, vocal, style, director, gen_mode, pm,
                                 delete_path=sel_path, camera_motion=cam,
                                 use_llm_image_prompt=(llm_img == "Convert with LLM"),
-                                caching_mode=caching_mode, vocal_chain_mode=vocal_chain,
+                                caching_mode=caching_mode, h3_prompt_cache_mode=h3_cache_mode,
+                                vocal_chain_mode=vocal_chain,
                                 lora_path=lora),
         inputs=[single_shot_dropdown, selected_vid_path, vid_resolution_dropdown,
                 vid_vocal_prompt_mode, vid_style_dropdown, vid_director_dropdown, vid_firstframe_mode,
-                llm_image_prompt_dropdown, first_frame_reuse_dropdown, vid_vocal_chain_checkbox,
+                llm_image_prompt_dropdown, first_frame_reuse_dropdown, h3_prompt_cache_dropdown,
+                vid_vocal_chain_checkbox,
                 single_shot_camera_dropdown, vid_lora_dropdown, pm_state],
         outputs=[vid_gen_status]
     ).then(
@@ -1394,7 +1524,8 @@ def build(pm_state, current_proj_var, shared_shot_state):
         handle_regen_vid_and_prompt,
         inputs=[single_shot_dropdown, selected_vid_path, vid_resolution_dropdown,
                 vid_vocal_prompt_mode, vid_style_dropdown, vid_director_dropdown, vid_firstframe_mode,
-                llm_image_prompt_dropdown, first_frame_reuse_dropdown, vid_vocal_chain_checkbox,
+                llm_image_prompt_dropdown, first_frame_reuse_dropdown, h3_prompt_cache_dropdown,
+                vid_vocal_chain_checkbox,
                 single_shot_camera_dropdown, vid_lora_dropdown, current_proj_var, pm_state],
         outputs=[vid_gallery, vid_gen_status, gallery_paths_state,
                  current_render_progress, queue_progress_bar,
@@ -1509,6 +1640,9 @@ def build(pm_state, current_proj_var, shared_shot_state):
         "vid_zimage_backend": vid_zimage_backend,
         "llm_image_prompt_dropdown": llm_image_prompt_dropdown,
         "first_frame_reuse_dropdown": first_frame_reuse_dropdown,
+        "h3_prompt_cache_row": h3_prompt_cache_row,
+        "h3_prompt_cache_dropdown": h3_prompt_cache_dropdown,
+        "h3_prompt_cache_status": h3_prompt_cache_status,
         "first_frame_prompt_row": first_frame_prompt_row,
         "first_frame_img_status": first_frame_img_status,
         "vid_vocal_prompt_mode": vid_vocal_prompt_mode,

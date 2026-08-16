@@ -4,7 +4,7 @@ import os
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import h3
 import pandas as pd
@@ -33,6 +33,11 @@ class H3WorkflowTests(unittest.TestCase):
         ])
         self.assertEqual(workflow["1512:2590"]["inputs"]["steps"], 4)
         self.assertIn("ref2v_turbo_4step", workflow["2678"]["inputs"]["stack_data"])
+        output = workflow["2568"]["inputs"]
+        self.assertEqual(output["codec"], "H.264")
+        self.assertEqual(output["container"], "MP4")
+        self.assertEqual(output["bit_depth"], "8-bit")
+        self.assertEqual(output["audio_codec"], "AAC")
 
     def test_custom_aspect_uses_the_workflow_enum_and_dimensions(self):
         workflow = h3.patch_h3_fl2(
@@ -42,6 +47,8 @@ class H3WorkflowTests(unittest.TestCase):
         inputs = workflow["1512:2531"]["inputs"]
         self.assertEqual(inputs["aspect_preset_when_not_image"], "CUSTOM")
         self.assertEqual((inputs["custom_aspect_width"], inputs["custom_aspect_height"]), (21, 9))
+        output = workflow["2568"]["inputs"]
+        self.assertEqual((output["codec"], output["container"]), ("H.264", "MP4"))
 
     def test_landscape_aspects_use_custom_ratio_and_krea_documented_geometry(self):
         for label, ratio, dimensions in (
@@ -199,6 +206,66 @@ class H3WorkflowTests(unittest.TestCase):
         self.assertIn("<Picture 2> for facial identity", system_prompt)
         self.assertIn("<Picture 3> for full-body", system_prompt)
         self.assertIn("never invent lyrics", system_prompt)
+
+    def test_h3_prompt_cache_can_be_reused_or_explicitly_bypassed(self):
+        class FakePM:
+            queue_lock = threading.Lock()
+
+            def __init__(self):
+                self.settings = {}
+
+            def load_project_settings(self):
+                return dict(self.settings)
+
+            def save_project_settings(self, value):
+                self.settings.update(value)
+
+        pm = FakePM()
+        bridge = Mock()
+        bridge.query.side_effect = ["first rewrite", "fresh rewrite"]
+        args = (pm, "A figure crosses a bridge.", 5.0, "FL2VA",
+                ["<Picture 1>: starting frame"], "vision-model")
+
+        self.assertEqual(h3.rewrite_h3_prompt(*args, llm_bridge=bridge), "first rewrite")
+        self.assertEqual(h3.rewrite_h3_prompt(*args, llm_bridge=bridge), "first rewrite")
+        self.assertEqual(bridge.query.call_count, 1)
+
+        self.assertEqual(
+            h3.rewrite_h3_prompt(*args, llm_bridge=bridge, use_cache=False),
+            "fresh rewrite",
+        )
+        self.assertEqual(bridge.query.call_count, 2)
+        self.assertEqual(h3.rewrite_h3_prompt(*args, llm_bridge=bridge), "fresh rewrite")
+
+    def test_h3_prompt_cache_is_bounded(self):
+        class FakePM:
+            queue_lock = threading.Lock()
+
+            def __init__(self):
+                self.settings = {
+                    "h3_prompt_cache": {
+                        f"old-{index}": f"prompt-{index}"
+                        for index in range(h3.H3_PROMPT_CACHE_LIMIT)
+                    }
+                }
+
+            def load_project_settings(self):
+                return dict(self.settings)
+
+            def save_project_settings(self, value):
+                self.settings.update(value)
+
+        pm = FakePM()
+        bridge = Mock()
+        bridge.query.return_value = "new rewrite"
+        h3.rewrite_h3_prompt(
+            pm, "New shot", 4.0, "FL2VA", ["<Picture 1>: starting frame"],
+            "vision-model", llm_bridge=bridge,
+        )
+        cache = pm.settings["h3_prompt_cache"]
+        self.assertEqual(len(cache), h3.H3_PROMPT_CACHE_LIMIT)
+        self.assertNotIn("old-0", cache)
+        self.assertIn("new rewrite", cache.values())
 
     def test_storyboard_vocal_routes_target_frame_into_lipsync_patch(self):
         with tempfile.TemporaryDirectory() as root:

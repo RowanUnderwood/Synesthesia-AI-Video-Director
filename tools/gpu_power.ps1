@@ -1,7 +1,7 @@
 <#
     gpu_power.ps1 — the elevated half of the "GPU Power Limit" feature.
 
-    Run by the Scheduled Task `ImageAnimatorVideoExtenderGpuPower` (registered once by
+    Run by the Scheduled Task `SynesthesiaAIVideoDirectorGpuPower` (registered once by
     register_gpu_power_task.bat, /RU SYSTEM /RL HIGHEST).  The unelevated app
     writes gpu_power_plan.json, fires `schtasks /run`, and polls for a
     gpu_power_result.json carrying the plan's nonce.
@@ -17,7 +17,7 @@
 
 $ErrorActionPreference = 'Stop'
 
-$ExchangeDir = Join-Path $env:ProgramData 'Image Animator and Video Extender\GpuPowerExchange'
+$ExchangeDir = Join-Path $env:ProgramData 'Synesthesia AI Video Director\GpuPowerExchange'
 $PlanPath   = Join-Path $ExchangeDir 'gpu_power_plan.json'
 $ResultPath = Join-Path $ExchangeDir 'gpu_power_result.json'
 New-Item -ItemType Directory -Path $ExchangeDir -Force | Out-Null

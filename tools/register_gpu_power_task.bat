@@ -1,5 +1,5 @@
 @echo off
-REM  register_gpu_power_task.bat - setup for Image Animator and Video Extender.
+REM  register_gpu_power_task.bat - setup for Synesthesia AI Video Director.
 REM
 REM  Thin launcher for register_gpu_power_task.ps1, which self-elevates.  Double-
 REM  click this, accept the single UAC prompt, and the app can thereafter cap and

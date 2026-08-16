@@ -334,6 +334,13 @@ def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
     )
 
     def _generate_h3_references(name, pm):
+        if getattr(pm, "queue_processor_running", False) or (
+            getattr(pm, "pipeline_runtime", None) and pm.pipeline_runtime.is_active()
+        ):
+            return "❌ Character references are unavailable while the render queue is running.", None, None, get_h3_reference_gallery(pm)
+        if getattr(pm, "character_reference_busy", False):
+            return "⚠️ Character-reference generation is already running.", None, None, get_h3_reference_gallery(pm)
+        pm.character_reference_busy = True
         try:
             names = [name] if name else []
             completed = generate_h3_character_references(pm, names)
@@ -341,13 +348,24 @@ def build(pm_state, current_proj_var, shared_shot_state, vocals_up, lyrics_in):
             return f"✅ Generated H3 references for: {', '.join(completed)}", face, body, get_h3_reference_gallery(pm)
         except Exception as exc:
             return f"❌ {exc}", None, None, get_h3_reference_gallery(pm) if pm and pm.current_project else []
+        finally:
+            pm.character_reference_busy = False
 
     def _generate_all_h3_references(pm):
+        if getattr(pm, "queue_processor_running", False) or (
+            getattr(pm, "pipeline_runtime", None) and pm.pipeline_runtime.is_active()
+        ):
+            return "❌ Character references are unavailable while the render queue is running.", get_h3_reference_gallery(pm)
+        if getattr(pm, "character_reference_busy", False):
+            return "⚠️ Character-reference generation is already running.", get_h3_reference_gallery(pm)
+        pm.character_reference_busy = True
         try:
             completed = generate_h3_character_references(pm)
             return f"✅ Generated H3 references for: {', '.join(completed)}", get_h3_reference_gallery(pm)
         except Exception as exc:
             return f"❌ {exc}", get_h3_reference_gallery(pm) if pm and pm.current_project else []
+        finally:
+            pm.character_reference_busy = False
 
     h3_generate_character_btn.click(
         _generate_h3_references,

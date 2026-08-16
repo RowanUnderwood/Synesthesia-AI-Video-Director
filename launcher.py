@@ -17,6 +17,7 @@ os.chdir(PROJECT_DIR)
 
 VENV_PYTHON  = PROJECT_DIR / "venv" / "Scripts" / "python.exe"
 CONFIG_FILE  = PROJECT_DIR / "launcher_config.json"
+GLOBAL_SETTINGS_FILE = PROJECT_DIR / "global_settings.json"
 REQUIREMENTS_FILE = PROJECT_DIR / "requirements.txt"
 REQUIREMENTS_MARKER = PROJECT_DIR / "venv" / ".requirements.sha256"
 
@@ -119,6 +120,25 @@ def load_config() -> dict:
         print(f"ERROR: Could not parse launcher_config.json: {exc}")
         print(f"  Fix the file and try again: {CONFIG_FILE}")
         pause_exit(1)
+
+
+def load_video_backend(settings_file: Path = None) -> str:
+    """Read the saved backend without importing the app's dependency-heavy config module."""
+    path = Path(settings_file) if settings_file is not None else GLOBAL_SETTINGS_FILE
+    if not path.exists():
+        print("WARNING: global_settings.json was not found; launching the LTX Desktop service by default.")
+        return "LTX Desktop"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        backend = str(data.get("video_backend", "LTX Desktop")).strip()
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        print(f"WARNING: Could not read the saved video backend ({exc}); launching LTX Desktop by default.")
+        return "LTX Desktop"
+    valid = {"LTX Desktop", "Wan2GP", "LTX2.3-Multifunctional", "MiniMax H3"}
+    if backend not in valid:
+        print(f"WARNING: Unknown saved video backend {backend!r}; launching LTX Desktop by default.")
+        return "LTX Desktop"
+    return backend
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -348,6 +368,32 @@ def launch_if_not_running(exe_name: str, path_str: str, port: int = None) -> Non
         print(f"WARNING: Failed to launch {path.name}: {exc}")
 
 
+def launch_backend_services(cfg: dict, backend: str) -> None:
+    """Launch only the services used by the saved video backend."""
+    launch_if_not_running("LM Studio.exe", cfg.get("lm_studio_path", ""))
+
+    image_launcher = cfg.get("comfy_image_launcher_path", "")
+    video_launcher = cfg.get("comfy_video_launcher_path", "")
+    launch_if_not_running("cmd.exe", image_launcher, port=8188)
+
+    if backend == "MiniMax H3":
+        print("Video backend: MiniMax H3 — skipping LTX Desktop startup.")
+        launch_if_not_running("cmd.exe", video_launcher, port=8189)
+    elif backend == "LTX Desktop":
+        launch_if_not_running(
+            "LTX Desktop.exe",
+            cfg.get("ltx_desktop_path", ""),
+            port=cfg.get("ltx_desktop_port"),
+        )
+        print("Video backend: LTX Desktop — skipping MiniMax H3 ComfyUI startup.")
+    else:
+        print(f"Video backend: {backend} — skipping LTX Desktop and MiniMax H3 ComfyUI startup.")
+
+    # Retain the old launcher only for a deliberately configured legacy setup.
+    if not image_launcher and not video_launcher:
+        launch_if_not_running("StabilityMatrix.exe", cfg.get("stability_matrix_path", ""))
+
+
 def _claude_running() -> bool:
     """Return True if Claude (claude.exe or a claude-bearing node process) is running."""
     if _process_running("claude.exe"):
@@ -405,19 +451,7 @@ def main() -> None:
         os.startfile(f"http://localhost:{SYNESTHESIA_PORT}")
         sys.exit(0)
 
-    launch_if_not_running("LM Studio.exe", cfg.get("lm_studio_path", ""))
-    launch_if_not_running(
-        "LTX Desktop.exe",
-        cfg.get("ltx_desktop_path", ""),
-        port=cfg.get("ltx_desktop_port"),
-    )
-    image_launcher = cfg.get("comfy_image_launcher_path", "")
-    video_launcher = cfg.get("comfy_video_launcher_path", "")
-    launch_if_not_running("cmd.exe", image_launcher, port=8188)
-    launch_if_not_running("cmd.exe", video_launcher, port=8189)
-    # Retain the old launcher only for a deliberately configured legacy setup.
-    if not image_launcher and not video_launcher:
-        launch_if_not_running("StabilityMatrix.exe", cfg.get("stability_matrix_path", ""))
+    launch_backend_services(cfg, load_video_backend())
 
     result = subprocess.run([str(VENV_PYTHON), "app.py"])
     if result.returncode != 0:

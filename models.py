@@ -117,13 +117,24 @@ class LLMBridge:
             ],
             "temperature": temperature
         }
-        try:
-            resp = requests.post(url, json=payload, headers=self._headers(), timeout=600)
-            if resp.status_code != 200:
-                return f"Error {resp.status_code} from LLM: {resp.text}"
-            return resp.json()['choices'][0]['message']['content'].strip()
-        except Exception as e:
-            return f"Error: {str(e)}"
+        last_error = ""
+        for attempt in range(5):
+            try:
+                resp = requests.post(url, json=payload, headers=self._headers(), timeout=600)
+                if resp.status_code == 200:
+                    return resp.json()['choices'][0]['message']['content'].strip()
+                last_error = f"Error {resp.status_code} from LLM: {resp.text}"
+                detail = resp.text.lower()
+                retryable = resp.status_code == 429 or resp.status_code >= 500 or any(
+                    marker in detail for marker in ("loading", "not loaded", "failed to load", "jit")
+                )
+                if not retryable:
+                    return last_error
+            except Exception as e:
+                last_error = f"Error: {str(e)}"
+            if attempt < 4:
+                time.sleep(min(8, 2 ** attempt))
+        return last_error or "Error: LM Studio request failed."
 
 # ==========================================
 # PROJECT MANAGER
@@ -146,6 +157,8 @@ class ProjectManager:
         self.queue_lock = threading.Lock()
         self.queue_paused = False
         self.queue_processor_running = False
+        self.pipeline_runtime = None
+        self.character_reference_busy = False
 
         # Time Tracking Variables
         self.total_time_spent = 0
@@ -160,7 +173,9 @@ class ProjectManager:
         result = cls.__new__(cls)
         memo[id(self)] = result
         for k, v in self.__dict__.items():
-            if isinstance(v, type(threading.Lock())):
+            if k == "pipeline_runtime":
+                setattr(result, k, v)
+            elif isinstance(v, type(threading.Lock())):
                 setattr(result, k, threading.Lock())
             else:
                 setattr(result, k, copy.deepcopy(v, memo))

@@ -1,6 +1,7 @@
 import gradio as gr
 
 import config
+import gpu_power
 from models import LLMBridge
 
 _DEFAULT_URLS = {
@@ -94,6 +95,77 @@ def build(pm_state):
             value=_gpu_default,
             info="Select the GPU used by LTX Desktop. Requires pynvml. For multi-GPU systems.",
         )
+
+        with gr.Accordion("⚡ GPU Power Limits", open=False):
+            gr.Markdown(
+                "Power limits are machine-wide and require a one-time privileged helper registration. "
+                "The Synesthesia app itself remains unelevated. Values are clamped against limits "
+                "reported by `nvidia-smi` before they are saved and again by the SYSTEM helper."
+            )
+            power_limit_mode = gr.Radio(
+                choices=[("No limit (stock power)", "no_limit"),
+                         ("Wattage cap", "wattage_cap")],
+                value=config.POWER_LIMIT_MODE,
+                label="GPU Power Mode",
+            )
+            _gpu_cards = gpu_power.query_gpus()
+            _bounds_5090 = gpu_power.role_bounds("5090", _gpu_cards)
+            _bounds_4090 = gpu_power.role_bounds("4090", _gpu_cards)
+            _bounds_3090 = gpu_power.role_bounds("3090", _gpu_cards)
+            with gr.Row():
+                power_watts_5090 = gr.Number(
+                    value=gpu_power.clamp_watts("5090", config.POWER_WATTS_5090, _gpu_cards),
+                    minimum=_bounds_5090[0], maximum=_bounds_5090[1], step=5,
+                    precision=0, label="RTX 5090 cap (W)",
+                )
+                power_watts_4090 = gr.Number(
+                    value=gpu_power.clamp_watts("4090", config.POWER_WATTS_4090, _gpu_cards),
+                    minimum=_bounds_4090[0], maximum=_bounds_4090[1], step=5,
+                    precision=0, label="RTX 4090 cap (W)",
+                )
+                power_watts_3090 = gr.Number(
+                    value=gpu_power.clamp_watts("3090", config.POWER_WATTS_3090, _gpu_cards),
+                    minimum=_bounds_3090[0], maximum=_bounds_3090[1], step=5,
+                    precision=0, label="RTX 3090 cap (W)",
+                )
+            gpu_power_state = gr.Textbox(
+                label="Hardware power state", value=gpu_power.current_state(), interactive=False,
+            )
+            gpu_helper_state = gr.Textbox(
+                label="Power helper", value=gpu_power.helper_status(), interactive=False,
+            )
+            with gr.Row():
+                register_power_helper_btn = gr.Button("🔐 Register Helper (one UAC prompt)")
+                apply_power_btn = gr.Button("⚡ Apply Selected Mode", variant="primary")
+                restore_power_btn = gr.Button("↩ Restore Stock Limits")
+                refresh_power_btn = gr.Button("🔄 Refresh")
+
+        with gr.Accordion("🚦 Render Queue & H3 Co-op", open=False):
+            gr.Markdown(
+                "The pipelined queue overlaps LM Studio prompt work, first-frame generation, and video. "
+                "Legacy remains available while the new pipeline is validated. H3 co-op is opt-in and "
+                "only borrows the 4090 after every upstream image and prompt stage has drained."
+            )
+            with gr.Row():
+                render_queue_mode = gr.Radio(
+                    choices=["Legacy", "Pipelined"], value=config.RENDER_QUEUE_MODE,
+                    label="Render Queue Mode",
+                )
+                llm_concurrency = gr.Slider(
+                    minimum=1, maximum=4, step=1, value=config.LLM_CONCURRENCY,
+                    label="Maximum Concurrent LM Studio Prompts",
+                )
+            h3_coop_enabled = gr.Checkbox(
+                value=config.H3_COOP_ENABLED,
+                label="Enable 4090 co-op for MiniMax H3 video (experimental)",
+                info=("Disabled by default. Before engaging, Synesthesia unloads the image ComfyUI "
+                      "models and local LM Studio model, then checks available Windows system commit."),
+            )
+            h3_coop_min_commit = gr.Number(
+                value=config.H3_COOP_MIN_AVAILABLE_COMMIT_GB, minimum=32, maximum=256,
+                step=1, precision=0, label="Minimum available system commit before co-op (GB)",
+                info="84 GB is conservative for the measured ~77 GB second H3 pipeline on this 128 GB RAM system.",
+            )
         with gr.Row():
             save_settings_btn = gr.Button("💾 Save Settings", variant="primary")
             calibration_reset_btn = gr.Button("🔄 Reset Render Calibration", variant="secondary")
@@ -282,7 +354,10 @@ LTX2.3-Multifunctional's own settings if needed.
 
     def handle_save_settings(video_url, ltx_auth_token, lm_url, lm_token, llm_model,
                              comfyui_url, h3_comfyui_url, backend, electricity_cost,
-                             system_wattage, gpu_monitor):
+                             system_wattage, gpu_monitor, power_mode, watts_5090,
+                             watts_4090, watts_3090, queue_mode, llm_workers,
+                             coop_enabled, coop_min_commit):
+        previous_backend = config.VIDEO_BACKEND
         settings = {
             "ltx_base_url": video_url,
             "ltx_auth_token": ltx_auth_token,
@@ -295,15 +370,83 @@ LTX2.3-Multifunctional's own settings if needed.
             "electricity_cost": electricity_cost,
             "system_wattage": system_wattage,
             "gpu_monitor_index": gpu_monitor,
+            "power_limit_mode": power_mode,
+            "power_watts_5090": watts_5090,
+            "power_watts_4090": watts_4090,
+            "power_watts_3090": watts_3090,
+            "render_queue_mode": queue_mode,
+            "llm_concurrency": llm_workers,
+            "h3_coop_enabled": coop_enabled,
+            "h3_coop_min_available_commit_gb": coop_min_commit,
         }
-        return config.save_global_url_settings(settings)
+        saved = config.save_global_url_settings(settings)
+        if power_mode == "wattage_cap":
+            _ok, power_message = gpu_power.apply_limits(gpu_power.watts_from_settings(settings))
+        elif gpu_power.is_capped():
+            _ok, power_message = gpu_power.restore_defaults()
+        else:
+            power_message = "GPU power is already at stock limits."
+        messages = [saved, power_message]
+        if (not saved.startswith("❌") and previous_backend != backend
+                and backend == "LTX Desktop"):
+            messages.append(
+                "⚠️ Restart Synesthesia to launch LTX Desktop. Saving the backend does not start it "
+                "inside the current app session."
+            )
+        return "\n".join(messages)
 
     save_settings_btn.click(
         handle_save_settings,
         inputs=[video_api_url_in, ltx_auth_token_in, lm_url_in, lm_token_in, llm_model_dropdown,
                 comfyui_url_in, h3_comfyui_url_in, video_backend_drp, electricity_cost_in,
-                system_wattage_in, gpu_monitor_drp],
+                system_wattage_in, gpu_monitor_drp, power_limit_mode,
+                power_watts_5090, power_watts_4090, power_watts_3090,
+                render_queue_mode, llm_concurrency, h3_coop_enabled, h3_coop_min_commit],
         outputs=[settings_status],
+    )
+
+    def _power_status(message=""):
+        prefix = f"{message}\n" if message else ""
+        return prefix + gpu_power.current_state(), gpu_power.helper_status()
+
+    def _register_power_helper():
+        _ok, message = gpu_power.register_helper()
+        return _power_status(message)
+
+    register_power_helper_btn.click(
+        _register_power_helper, outputs=[gpu_power_state, gpu_helper_state]
+    )
+
+    def _apply_power(mode, watts_5090, watts_4090, watts_3090):
+        settings = {
+            "power_limit_mode": mode,
+            "power_watts_5090": watts_5090,
+            "power_watts_4090": watts_4090,
+            "power_watts_3090": watts_3090,
+        }
+        config.save_global_url_settings(settings)
+        if mode == "wattage_cap":
+            _ok, message = gpu_power.apply_limits(gpu_power.watts_from_settings(settings))
+        else:
+            _ok, message = gpu_power.restore_defaults()
+        return _power_status(message)
+
+    apply_power_btn.click(
+        _apply_power,
+        inputs=[power_limit_mode, power_watts_5090, power_watts_4090, power_watts_3090],
+        outputs=[gpu_power_state, gpu_helper_state],
+    )
+    def _restore_stock_power():
+        config.save_global_url_settings({"power_limit_mode": "no_limit"})
+        state, helper = _power_status(gpu_power.restore_defaults()[1])
+        return state, helper, gr.update(value="no_limit")
+
+    restore_power_btn.click(
+        _restore_stock_power,
+        outputs=[gpu_power_state, gpu_helper_state, power_limit_mode],
+    )
+    refresh_power_btn.click(
+        _power_status, outputs=[gpu_power_state, gpu_helper_state],
     )
 
     def refresh_llm_models(lm_url, lm_token, current_model):
